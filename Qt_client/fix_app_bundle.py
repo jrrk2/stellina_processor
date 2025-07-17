@@ -6,7 +6,6 @@ from pathlib import Path
 APP_PATH = Path("build/exported/StellinaProcessor.app")
 EXECUTABLE = APP_PATH / "Contents/MacOS/StellinaProcessor"
 FRAMEWORKS_DIR = APP_PATH / "Contents/Frameworks"
-SIGN_IDENTITY = "Apple Development: Mr Jonathan Kimmitt (5AU5B5HJQX)"
 
 def run(cmd):
     print(f"> {cmd}")
@@ -60,8 +59,6 @@ def fix_all():
 
     # This one got missed
     copy_dependency("/opt/homebrew/lib/python3.11/site-packages/numpy/.dylibs/libgcc_s.1.1.dylib")
-    # Resign app
-    run(f'codesign --deep --force --options runtime --sign "{SIGN_IDENTITY}" "{APP_PATH}"')
 
 if __name__ == "__main__":
     fix_all()
