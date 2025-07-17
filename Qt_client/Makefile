@@ -12,6 +12,9 @@ DEVELOPER_ID = "Developer ID Application: Mr Jonathan Kimmitt (Y53675G8V9)"
 ENTITLEMENTS = sandbox.entitlements
 BUILD_DIR = build
 
+qmake:
+	qmake -spec macx-xcode StellinaProcessor.pro
+
 run: ./build/exported/StellinaProcessor.app
 	./build/exported/StellinaProcessor.app/Contents/MacOS/StellinaProcessor
 

@@ -126,6 +126,7 @@ void StellinaProcessor::setupWCSStackingUI() {
     wcsLayout->addWidget(m_wcsOutputPixelScaleSpin, 6, 1, 1, 2);
     
     // Control buttons
+    /*
     QHBoxLayout *wcsButtonLayout = new QHBoxLayout;
     m_startWCSStackingButton = new QPushButton("Start WCS Stacking");
     m_startWCSStackingButton->setStyleSheet("QPushButton { background-color: #4CAF50; color: white; font-weight: bold; }");
@@ -137,6 +138,7 @@ void StellinaProcessor::setupWCSStackingUI() {
     wcsButtonLayout->addStretch();
     
     wcsLayout->addLayout(wcsButtonLayout, 7, 0, 1, 4);
+    */
     
     // Add to stacking tab layout
     QVBoxLayout *stackingTabLayout = qobject_cast<QVBoxLayout*>(m_stackingTab->layout());
@@ -163,11 +165,12 @@ void StellinaProcessor::setupWCSStackingUI() {
             this, &StellinaProcessor::onWCSParametersChanged);
     connect(m_wcsOutputPixelScaleSpin, QOverload<double>::of(&QDoubleSpinBox::valueChanged),
             this, &StellinaProcessor::onWCSParametersChanged);
-    
+/*
     connect(m_startWCSStackingButton, &QPushButton::clicked,
             this, &StellinaProcessor::onStartWCSStacking);
     connect(m_saveWCSResultButton, &QPushButton::clicked,
             this, &StellinaProcessor::onSaveWCSResult);
+ */
 }
 
 void StellinaProcessor::onWCSParametersChanged() {
@@ -259,26 +262,27 @@ void StellinaProcessor::onStartWCSStacking() {
     }
     
     logMessage(QString("Successfully loaded %1 images for WCS stacking").arg(successfullyLoaded), "green");
-    
+/*
     // Update UI state
     m_startWCSStackingButton->setEnabled(false);
     m_startWCSStackingButton->setText("Stacking...");
     m_saveWCSResultButton->setEnabled(false);
-    
+*/
     // Start the stacking process
     m_wcsStacker->startStacking();
 }
 
 void StellinaProcessor::onWCSStackingComplete(bool success) {
     // Restore UI state
+    /*
     m_startWCSStackingButton->setEnabled(true);
     m_startWCSStackingButton->setText("Start WCS Stacking");
-    
+    */
     if (success) {
         logMessage("WCS astrometric stacking completed successfully!", "green");
         
         // Enable save button
-        m_saveWCSResultButton->setEnabled(true);
+        // m_saveWCSResultButton->setEnabled(true);
         
         // Show completion statistics
         QString stats = QString("Stacking Statistics:\n"
@@ -308,7 +312,7 @@ void StellinaProcessor::onWCSStackingComplete(bool success) {
                                 "WCS astrometric stacking completed successfully!\n\n" + stats);
     } else {
         logMessage("WCS astrometric stacking failed.", "red");
-        m_saveWCSResultButton->setEnabled(false);
+        // m_saveWCSResultButton->setEnabled(false);
         
         QMessageBox::critical(this, "Stacking Failed", 
                              "WCS astrometric stacking failed. Check the log for details.");
@@ -444,8 +448,8 @@ void StellinaProcessor::addWCSMenuItems() {
     // This should be called from your setupMenu() function
     QMenu *wcsMenu = menuBar()->addMenu("WCS &Stacking");
     
-    wcsMenu->addAction("&Start WCS Stacking", this, &StellinaProcessor::onStartWCSStacking);
-    wcsMenu->addAction("&Save WCS Result", this, &StellinaProcessor::onSaveWCSResult);
+//    wcsMenu->addAction("&Start WCS Stacking", this, &StellinaProcessor::onStartWCSStacking);
+//    wcsMenu->addAction("&Save WCS Result", this, &StellinaProcessor::onSaveWCSResult);
     wcsMenu->addSeparator();
     wcsMenu->addAction("&Test WCS Loading", [this]() {
         QString testFile = QFileDialog::getOpenFileName(this, "Select Plate-Solved FITS", 
@@ -494,14 +498,14 @@ void StellinaProcessor::updateWCSUI() {
     bool hasPlatesolved = !m_plateSolvedDirectory.isEmpty() && 
                          QDir(m_plateSolvedDirectory).exists();
     bool hasWCSResult = false; // !m_wcsStacker->getStackedImage().empty();
-    
+/*
     if (m_startWCSStackingButton) {
         m_startWCSStackingButton->setEnabled(hasPlatesolved && !m_processing);
     }
     if (m_saveWCSResultButton) {
         m_saveWCSResultButton->setEnabled(hasWCSResult && !m_processing);
     }
-    
+*/
     // Update combination method enable/disable based on rejection method
     bool usingSigmaClipping = (m_wcsStackingParams.rejection == StackingParams::SIGMA_CLIPPING);
     if (m_wcsSigmaLowSpin) {

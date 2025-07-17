@@ -486,6 +486,7 @@ QStringList StellinaProcessor::findAllMatchingDarkFrames(int targetExposure, int
         int temperature = extractTemperature(fullPath);
         QString binning = extractBinning(fullPath);
         QString bayerPattern = detectBayerPattern(fullPath);
+        qDebug() << exposure << " " << temperature << " " << binning << " " << bayerPattern;
         
         // Check if this dark frame matches the light frame characteristics
         bool exposureMatch = qAbs(exposure - targetExposure) <= (targetExposure * m_exposureTolerance / 100);
