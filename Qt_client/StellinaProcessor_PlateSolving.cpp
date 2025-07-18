@@ -428,24 +428,7 @@ QString StellinaProcessor::generatePlateSolvedPath(const QString &inputPath) {
     QString outputName = QString("plate_solved_%1.fits").arg(baseName);
     return QDir(m_plateSolvedDirectory).absoluteFilePath(outputName);
 }
-/*
-bool StellinaProcessor::cleanupSolveFieldTemporaryFiles(const QString &inputPath) {
-    // solve-field creates several temporary files, clean them up
-    QString basePath = QFileInfo(inputPath).absolutePath();
-    QString baseName = QFileInfo(inputPath).baseName();
-    
-    QStringList tempExtensions = {".axy", ".corr", ".match", ".rdls", ".solved", ".wcs"};
-    
-    for (const QString &ext : tempExtensions) {
-        QString tempFile = QDir(basePath).absoluteFilePath(baseName + ext);
-        if (QFile::exists(tempFile)) {
-            QFile::remove(tempFile);
-        }
-    }
-    
-    return true;
-}
-*/
+
 bool StellinaProcessor::estimateFieldOfView(const QString &fitsPath, double &fovWidth, double &fovHeight) {
     // Default Stellina field of view
     fovWidth = 1.0;   // degrees
