@@ -58,7 +58,7 @@ def fix_all():
                 fix_binary(fw_binary)
 
     # This one got missed
-    copy_dependency("/opt/homebrew/lib/python3.11/site-packages/numpy/.dylibs/libgcc_s.1.1.dylib")
+    copy_dependency("/opt/homebrew/Cellar/gcc/15.1.0/lib/gcc/current/libgcc_s.1.1.dylib")
 
 if __name__ == "__main__":
     fix_all()
