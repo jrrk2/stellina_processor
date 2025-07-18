@@ -1,3 +1,339 @@
+// Refactored WcsAstrometricStacker.cpp with modular stacking and simplified pixel structures
+// This version breaks down the stacking process into subframes and uses efficient Bayer color tracking
+
+#include "WcsAstrometricStacker.h"
+#include "StellinaProcessor.h"
+
+#include <QFileInfo>
+#include <QTimer>
+#include <QDateTime>
+#include <QApplication>
+#include <QTextStream>
+#include <QRegularExpression>
+#include <QDebug>
+#include <cmath>
+#include <algorithm>
+
+// Utility function to determine Bayer color from pixel coordinates
+uint8_t getBayerColor(int x, int y, const QString& pattern) {
+    if (pattern == "RGGB") {
+        if (y % 2 == 0) {
+            return (x % 2 == 0) ? 0 : 1;  // R or G1
+        } else {
+            return (x % 2 == 0) ? 1 : 3;  // G2 or B
+        }
+    } else if (pattern == "BGGR") {
+        if (y % 2 == 0) {
+            return (x % 2 == 0) ? 3 : 1;  // B or G1
+        } else {
+            return (x % 2 == 0) ? 1 : 0;  // G2 or R
+        }
+    }
+    return 1; // Default to Green
+}
+
+bool WCSAstrometricStacker::stackImages() {
+    updateProgress(0, "Starting modular astrometric stacking...");
+    
+    if (m_images.empty()) {
+        emit errorOccurred("No images loaded for stacking");
+        return false;
+    }
+    
+    // Step 1: Compute optimal output WCS and dimensions
+    updateProgress(5, "Computing optimal output coordinate system...");
+    if (!computeOptimalWCS()) {
+        emit errorOccurred("Failed to compute optimal WCS");
+        return false;
+    }
+    
+    // Initialize output images
+    m_stacked_image = cv::Mat::zeros(m_output_size, CV_32F);
+    m_weight_map = cv::Mat::zeros(m_output_size, CV_32F);
+    m_overlap_map = cv::Mat::zeros(m_output_size, CV_8U);
+    
+    // Step 2: Initialize memory-efficient pixel accumulators
+    updateProgress(10, "Initializing pixel accumulators...");
+    
+    std::vector<PixelAccumulator> pixel_accumulators(
+        m_output_size.height * m_output_size.width
+    );
+    
+    // Step 3: Process images in subframes with progress updates
+    const int SUBFRAME_HEIGHT = 256;  // Process 256 rows at a time
+    const int total_subframes = (m_output_size.height + SUBFRAME_HEIGHT - 1) / SUBFRAME_HEIGHT;
+    
+    logProcessing(QString("Processing %1 images in %2 subframes of %3 rows each")
+                 .arg(m_images.size()).arg(total_subframes).arg(SUBFRAME_HEIGHT));
+    
+    m_pixels_processed = 0;
+    m_pixels_rejected = 0;
+    
+    // Process each image, breaking into subframes
+    for (size_t img_idx = 0; img_idx < m_images.size(); ++img_idx) {
+        const auto& img_data = m_images[img_idx];
+        
+        updateProgress(15 + (img_idx * 70) / m_images.size(), 
+                      QString("Processing image %1/%2: %3")
+                      .arg(img_idx + 1)
+                      .arg(m_images.size())
+                      .arg(QFileInfo(img_data->filename).fileName()));
+        
+        // Determine Bayer pattern for this image
+        QString bayer_pattern = determineBayerPattern(img_data->filename);
+        
+        // Process this image in subframes
+        for (int subframe = 0; subframe < total_subframes; ++subframe) {
+            int start_row = subframe * SUBFRAME_HEIGHT;
+            int end_row = std::min(start_row + SUBFRAME_HEIGHT, m_output_size.height);
+            
+            updateProgress(15 + (img_idx * 70) / m_images.size() + 
+                          (subframe * 70) / (m_images.size() * total_subframes),
+                          QString("Processing image %1/%2, subframe %3/%4 (rows %5-%6)")
+                          .arg(img_idx + 1).arg(m_images.size())
+                          .arg(subframe + 1).arg(total_subframes)
+                          .arg(start_row).arg(end_row - 1));
+            
+            // Process pixels in this subframe
+            processImageSubframe(img_data, pixel_accumulators, 
+                               start_row, end_row, bayer_pattern, img_idx);
+            
+            // Allow UI updates between subframes
+            QApplication::processEvents();
+            
+            if (!m_stacking_active) {
+                updateProgress(0, "Stacking cancelled");
+                return false;
+            }
+        }
+    }
+    
+    // Step 4: Finalize pixel values from accumulators
+    updateProgress(85, "Finalizing stacked image...");
+    finalizeStackedImage(pixel_accumulators);
+    
+    // Step 5: Apply post-processing
+    updateProgress(90, "Applying post-processing...");
+    if (m_params.apply_brightness_normalization) {
+        applyBrightnessNormalization();
+    }
+    
+    // Step 6: Generate quality maps
+    updateProgress(95, "Generating quality maps...");
+    generateQualityMaps();
+    
+    // Step 7: Log statistics
+    updateProgress(100, "Stacking complete");
+    logOverlapStatistics();
+    logBayerStatistics(pixel_accumulators);
+    
+    finishStacking();
+    return true;
+}
+
+bool WCSAstrometricStacker::processImageSubframe(
+    const std::unique_ptr<WCSImageData>& img_data,
+    std::vector<PixelAccumulator>& pixel_accumulators,
+    int start_row, int end_row,
+    const QString& bayer_pattern,
+    size_t img_idx) {
+    
+    const cv::Mat& source_image = img_data->image;
+    const SimpleTANWCS& source_wcs = img_data->wcs;
+    
+    if (!source_wcs.valid) {
+        logProcessing(QString("Warning: Invalid WCS for image %1").arg(img_data->filename));
+        return false;
+    }
+    
+    // Process each row in this subframe
+    for (int target_y = start_row; target_y < end_row; ++target_y) {
+        for (int target_x = 0; target_x < m_output_size.width; ++target_x) {
+            
+            // Convert target pixel to world coordinates
+            double ra, dec;
+            if (!m_output_wcs.pixelToWorld(target_x + 1, target_y + 1, ra, dec)) {
+                continue;
+            }
+            
+            // Convert world coordinates to source image pixels
+            double source_x, source_y;
+            if (!source_wcs.worldToPixel(ra, dec, source_x, source_y)) {
+                continue;
+            }
+            
+            // Convert to 0-indexed coordinates
+            source_x -= 1.0;
+            source_y -= 1.0;
+            
+            // Check bounds
+            if (source_x < 0 || source_x >= source_image.cols - 1 ||
+                source_y < 0 || source_y >= source_image.rows - 1) {
+                continue;
+            }
+            
+            // Bilinear interpolation
+            int x0 = static_cast<int>(std::floor(source_x));
+            int y0 = static_cast<int>(std::floor(source_y));
+            int x1 = x0 + 1;
+            int y1 = y0 + 1;
+            
+            float fx = source_x - x0;
+            float fy = source_y - y0;
+            
+            float v00 = source_image.at<float>(y0, x0);
+            float v01 = source_image.at<float>(y0, x1);
+            float v10 = source_image.at<float>(y1, x0);
+            float v11 = source_image.at<float>(y1, x1);
+            
+            float interpolated_value = 
+                v00 * (1 - fx) * (1 - fy) +
+                v01 * fx * (1 - fy) +
+                v10 * (1 - fx) * fy +
+                v11 * fx * fy;
+            
+            // Determine Bayer color for this pixel
+            uint8_t bayer_color = getBayerColor(target_x, target_y, bayer_pattern);
+            
+            // Calculate pixel weight based on image quality and distance from center
+            float weight = calculatePixelWeight(img_data, target_x, target_y, interpolated_value);
+            
+            // Add contribution to accumulator
+            int accumulator_idx = target_y * m_output_size.width + target_x;
+            pixel_accumulators[accumulator_idx].addContribution(
+                interpolated_value, weight, bayer_color);
+            
+            // Update overlap map
+            m_overlap_map.at<uint8_t>(target_y, target_x) = 
+                std::min(255, static_cast<int>(m_overlap_map.at<uint8_t>(target_y, target_x)) + 1);
+            
+            m_pixels_processed++;
+        }
+    }
+    return true;
+}
+
+bool WCSAstrometricStacker::finalizeStackedImage(
+    const std::vector<PixelAccumulator>& pixel_accumulators) {
+    
+    for (int y = 0; y < m_output_size.height; ++y) {
+        for (int x = 0; x < m_output_size.width; ++x) {
+            int idx = y * m_output_size.width + x;
+            const PixelAccumulator& acc = pixel_accumulators[idx];
+            
+            if (acc.contribution_count > 0) {
+                float final_value = acc.getFinalValue();
+                
+                // Apply sigma clipping if enabled
+                if (m_params.rejection == StackingParams::SIGMA_CLIPPING && 
+                    acc.contribution_count >= 3) {
+                    final_value = applySigmaClipping(acc, x, y);
+                }
+                
+                m_stacked_image.at<float>(y, x) = final_value;
+                m_weight_map.at<float>(y, x) = acc.sum_weight;
+            }
+        }
+    }
+    return true;
+}
+
+float WCSAstrometricStacker::calculatePixelWeight(
+    const std::unique_ptr<WCSImageData>& img_data,
+    int target_x, int target_y, float pixel_value) {
+    
+    // Base weight from image quality
+    float weight = img_data->quality_score;
+    
+    // Adjust for distance from image center
+    float center_x = m_output_size.width * 0.5f;
+    float center_y = m_output_size.height * 0.5f;
+    float distance = std::sqrt(std::pow(target_x - center_x, 2) + 
+                              std::pow(target_y - center_y, 2));
+    float max_distance = std::sqrt(center_x * center_x + center_y * center_y);
+    float distance_factor = 1.0f - (distance / max_distance) * 0.3f; // 30% reduction at edges
+    
+    weight *= distance_factor;
+    
+    // Adjust for pixel value (avoid very dark or saturated pixels)
+    if (pixel_value < 100.0f || pixel_value > 60000.0f) {
+        weight *= 0.5f;
+    }
+    
+    return std::max(0.1f, weight);  // Minimum weight
+}
+
+float WCSAstrometricStacker::applySigmaClipping(
+    const PixelAccumulator& acc, int x, int y) {
+    
+    // For now, just return the weighted mean
+    // In a full implementation, we'd need to store individual contributions
+    // for proper sigma clipping, but that would increase memory usage
+    return acc.getFinalValue();
+}
+
+void WCSAstrometricStacker::logBayerStatistics(
+    const std::vector<PixelAccumulator>& pixel_accumulators) {
+    
+    std::array<int, 4> bayer_counts = {0, 0, 0, 0};
+    const std::array<QString, 4> bayer_names = {"Red", "Green1", "Green2", "Blue"};
+    
+    for (const auto& acc : pixel_accumulators) {
+        if (acc.contribution_count > 0) {
+            bayer_counts[acc.primary_bayer_color]++;
+        }
+    }
+    
+    logProcessing("=== BAYER PATTERN STATISTICS ===");
+    for (int i = 0; i < 4; ++i) {
+        logProcessing(QString("  %1 pixels: %2").arg(bayer_names[i]).arg(bayer_counts[i]));
+    }
+}
+
+QString WCSAstrometricStacker::determineBayerPattern(const QString& filename) {
+    // Simple heuristic - check for reversed Stellina images
+    QString baseName = QFileInfo(filename).baseName().toLower();
+    
+    if (baseName.contains("r.fits") || baseName.endsWith("r")) {
+        return "BGGR";  // Reversed images typically have rotated Bayer pattern
+    }
+    
+    return "RGGB";  // Default for normal Stellina images
+}
+
+void WCSAstrometricStacker::applyBrightnessNormalization() {
+    if (m_stacked_image.empty()) return;
+    
+    // Simple brightness normalization based on median values in overlap regions
+    cv::Scalar mean_value = cv::mean(m_stacked_image, m_overlap_map > 0);
+    float target_brightness = 32768.0f; // Target 16-bit midpoint
+    
+    if (mean_value[0] > 0) {
+        float normalization_factor = target_brightness / mean_value[0];
+        m_stacked_image *= normalization_factor;
+        
+        logProcessing(QString("Applied brightness normalization: factor = %1")
+                     .arg(normalization_factor, 0, 'f', 3));
+    }
+}
+
+void WCSAstrometricStacker::generateQualityMaps() {
+    // Generate noise map based on overlap count
+    m_noise_map = cv::Mat::zeros(m_output_size, CV_32F);
+    
+    for (int y = 0; y < m_output_size.height; ++y) {
+        for (int x = 0; x < m_output_size.width; ++x) {
+            uint8_t overlap = m_overlap_map.at<uint8_t>(y, x);
+            if (overlap > 0) {
+                // Noise decreases with square root of overlap count
+                float noise_estimate = 1000.0f / std::sqrt(static_cast<float>(overlap));
+                m_noise_map.at<float>(y, x) = noise_estimate;
+            }
+        }
+    }
+}
+
+/*
 // Updated WcsAstrometricStacker.cpp with TAN projection implementation
 // Replace the WCS-related functions with these implementations
 
@@ -335,7 +671,7 @@ void WCSAstrometricStacker::applyGlobalBrightnessNormalization() {
         }
     }
 }
-
+*/
 // Helper function to log overlap statistics
 void WCSAstrometricStacker::logOverlapStatistics() {
     std::vector<int> overlapCounts(256, 0);
@@ -1159,7 +1495,7 @@ void WCSAstrometricStacker::finishStacking() {
 
 // Add this diagnostic function to WCSAstrometricStacker class
 // Call it after the first pass to understand overlap patterns
-
+/*
 void WCSAstrometricStacker::analyzeOverlapDistribution(const cv::Mat& overlap_count) {
     // Calculate overlap statistics
     double minOverlap, maxOverlap;
@@ -1234,3 +1570,4 @@ void WCSAstrometricStacker::saveOverlapMap(const cv::Mat& overlap_count, const Q
         fits_close_file(fptr, &status);
     }
 }
+*/

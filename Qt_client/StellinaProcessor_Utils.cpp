@@ -545,20 +545,20 @@ QStringList StellinaProcessor::findAllMatchingDarkFrames(int targetExposure, int
 // =============================================================================
 // Enhanced Dark Frame Processing
 // =============================================================================
-
-void StellinaProcessor::loadDarkFrames() {
+/*
+bool StellinaProcessor::loadDarkFrames() {
     m_darkFrames.clear();
     m_darkFramesTable->setRowCount(0);
     
     if (m_darkDirectory.isEmpty()) {
         m_darkFramesCount->setText("No dark frames directory selected");
-        return;
+        return false;
     }
     
     QDir darkDir(m_darkDirectory);
     if (!darkDir.exists()) {
         m_darkFramesCount->setText("Dark frames directory does not exist");
-        return;
+        return false;
     }
     
     QStringList darkFiles = darkDir.entryList(QStringList() << "*.fits" << "*.fit" << "*.FITS" << "*.FIT", QDir::Files);
@@ -666,8 +666,9 @@ void StellinaProcessor::loadDarkFrames() {
         }
         logMessage(QString("Bayer patterns: %1").arg(patternSummary.join(", ")), "blue");
     }
+    return true;
 }
-
+*/
 
 // Static member definitions
 QDateTime StellinaProcessor::s_sessionReferenceTime;

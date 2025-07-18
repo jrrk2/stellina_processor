@@ -422,7 +422,7 @@ bool StellinaProcessor::convertAltAzToRaDecFromCalibratedFits(const QString &cal
     // Use the existing convertAltAzToRaDec function as fallback
     return convertAltAzToRaDec(alt, az, dateObsStr, ra, dec);
 }
-
+/*
 bool StellinaProcessor::writeStellinaMetadataWithCoordinates(const QString &fitsPath, const StellinaImageData &imageData) {
     fitsfile *fptr = nullptr;
     int status = 0;
@@ -635,3 +635,4 @@ bool StellinaProcessor::writeStellinaMetadataWithCoordinates(const QString &fits
     
     return true;
 }
+*/

@@ -1,31 +1,21 @@
+// StellinaProcessor_Core.cpp - Minimal residual core after subdivision
+// Contains only essential coordination and control functions
+
 #include "StellinaProcessor.h"
-#include "CoordinateUtils.h"
 #include <QApplication>
 #include <QDir>
 #include <QFileInfo>
-#include <QJsonObject>
-#include <QJsonDocument>
-#include <QJsonArray>
+#include <QMessageBox>
 #include <QDateTime>
-#include <QSettings>
-#include <QSplitter>
-#include <QMenuBar>
-#include <QStatusBar>
-#include <QHeaderView>
-#include <QElapsedTimer>
-#include <QProcess>
-#include <QStandardItemModel>
-#include <QTableWidgetItem>
-#include <QThread>
 #include <QPainter>
-#include <cmath>
-#include <vector>
-#include <limits>
-#include <algorithm>  // for std::fmod if needed
+#include <QSettings>
+
+// ============================================================================
+// Constructor and Destructor
+// ============================================================================
 
 StellinaProcessor::StellinaProcessor(QWidget *parent)
     : QMainWindow(parent)
-    , m_processingTimer(new QTimer(this))
     , m_processing(false)
     , m_processingMode(MODE_BASIC_PLATESOLVE)
     , m_currentImageIndex(0)
@@ -39,44 +29,473 @@ StellinaProcessor::StellinaProcessor(QWidget *parent)
     , m_qualityFilter(true)
     , m_debugMode(false)
     , m_focalLength(400.0)
-    , m_pixelSize(2.40)
-    , m_observerLocation("London")
+    , m_pixelSize(3.76)
     , m_autoMatchDarks(true)
     , m_temperatureTolerance(5)
-    , m_exposureTolerance(10)
-    , m_sequenceName("stellina_sequence")
-    , m_mountTiltGroup(nullptr)           // Initialize UI pointers to nullptr
-    , m_enableTiltCorrectionCheck(nullptr)
-    , m_northTiltSpin(nullptr)
-    , m_eastTiltSpin(nullptr)
-    , m_calibrateTiltButton(nullptr)
-    , m_testTiltButton(nullptr)
-    , m_tiltStatusLabel(nullptr)
+    , m_exposureTolerance(2)
+    , m_wcsStacker(nullptr)
+    , m_stacking_initialized(false)
+    , m_stacking_subframe_row(0)
 {
-    setWindowTitle("Enhanced Stellina Processor");
-    setMinimumSize(1000, 800);
-    // Setup timer
-    m_processingTimer->setSingleShot(false);
-    m_processingTimer->setInterval(2000);
-    
+    // Initialize UI
     setupUI();
-    setupMenu();
-    connectSignals();
-    updateUI();
-    loadSettings();
-    testLibnovaConversion();
-    initializeWCSStacker();
-
-    logMessage("Enhanced Stellina Processor started.", "blue");
     
-    // Scan for dark frames if directory is set
-    if (!m_darkDirectory.isEmpty()) {
-        scanDarkFrames();
-    }
+    // Initialize processing timer
+    m_processingTimer = new QTimer(this);
+    m_processingTimer->setSingleShot(true);
+    connect(m_processingTimer, &QTimer::timeout, this, &StellinaProcessor::processNextImage);
+    
+    // Load dark frames on startup
+    loadDarkFrames();
+    
+    // Set default stacking parameters
+    m_stackingParams.combination = StackingParams::WEIGHTED_MEAN;
+    m_stackingParams.rejection = StackingParams::SIGMA_CLIPPING;
+    m_stackingParams.sigma_low = 3.0;
+    m_stackingParams.sigma_high = 3.0;
+    m_stackingParams.normalize_exposure = true;
+    m_stackingParams.create_weight_map = true;
+    
+    logMessage("Stellina Processor initialized", "green");
 }
 
 StellinaProcessor::~StellinaProcessor() {
-    saveSettings();
+    if (m_processing) {
+        stopProcessing();
+    }
+    
+    // Clean up stacker if allocated
+    m_stacker.reset();
+    
+    // Clean up temporary files
+    cleanupTemporaryFiles();
+}
+
+// ============================================================================
+// Main Processing Control
+// ============================================================================
+/*
+void StellinaProcessor::startStellinaProcessing() {
+    if (!validateProcessingInputs()) {
+        return;
+    }
+    
+    logMessage(QString("Starting %1 processing...")
+                  .arg(m_processingModeCombo->currentText()), "blue");
+    
+    // Initialize processing state
+    m_processing = true;
+    m_currentImageIndex = 0;
+    m_processedCount = 0;
+    m_errorCount = 0;
+    m_skippedCount = 0;
+    m_darkCalibratedCount = 0;
+    m_registeredCount = 0;
+    m_processingStartTime = QDateTime::currentMSecsSinceEpoch();
+    
+    // Clear previous results
+    m_darkCalibratedFiles.clear();
+    m_plateSolvedFiles.clear();
+    m_registeredFiles.clear();
+    m_finalStackedImage.clear();
+    m_stellinaImageData.clear();
+    
+    // Ensure output directories exist
+    if (!createOutputDirectories()) {
+        m_processing = false;
+        return;
+    }
+    
+    // Determine starting stage based on processing mode
+    bool success = false;
+    switch (m_processingMode) {
+    case MODE_BASIC_PLATESOLVE:
+        success = setupPlatesolvingStage();
+        break;
+    case MODE_DARK_CALIBRATION:
+        success = setupDarkCalibrationStage();
+        break;
+    case MODE_ASTROMETRIC_STACKING:
+        success = setupStackingStage();
+        break;
+    case MODE_FULL_PIPELINE:
+        success = setupDarkCalibrationStage(); // Start with first stage
+        break;
+    }
+    
+    if (!success) {
+        logMessage("Failed to setup initial processing stage", "red");
+        m_processing = false;
+        return;
+    }
+    
+    // Set up progress tracking
+    m_progressBar->setMaximum(m_imagesToProcess.length());
+    m_progressBar->setValue(0);
+    
+    updateProcessingStatus();
+    updateUI();
+    
+    logMessage(QString("Ready to process %1 images in %2 stage")
+                  .arg(m_imagesToProcess.length())
+                  .arg(getStageDescription()), "green");
+    
+    // Start processing timer
+    m_processingTimer->start(10);
+}
+*/
+void StellinaProcessor::stopProcessing() {
+    if (!m_processing) {
+        return;
+    }
+    
+    m_processing = false;
+    m_processingTimer->stop();
+    
+    // Stop any active stacker
+    if (m_stacker) {
+        m_stacker->cancelStacking();
+    }
+    
+    logMessage("Processing stopped by user", "blue");
+    
+    updateProcessingStatus();
+    updateUI();
+}
+
+void StellinaProcessor::pauseProcessing() {
+    if (m_processing && m_processingTimer->isActive()) {
+        m_processingTimer->stop();
+        logMessage("Processing paused", "orange");
+    } else if (m_processing) {
+        m_processingTimer->start(10);
+        logMessage("Processing resumed", "blue");
+    }
+}
+
+// ============================================================================
+// Stage Coordination (Core Responsibility)
+// ============================================================================
+/*
+void StellinaProcessor::processNextImage() {
+    if (!m_processing) {
+        return;
+    }
+    
+    if (m_currentImageIndex >= m_imagesToProcess.length()) {
+        // Current stage complete
+        if (m_processingMode == MODE_FULL_PIPELINE) {
+            handlePipelineStageTransition();
+        } else {
+            finishProcessing();
+        }
+        return;
+    }
+    
+    QString currentFile = m_imagesToProcess[m_currentImageIndex];
+    QString filename = QFileInfo(currentFile).fileName();
+    
+    logMessage(QString("Processing %1 of %2: %3")
+                  .arg(m_currentImageIndex + 1)
+                  .arg(m_imagesToProcess.length())
+                  .arg(filename), "blue");
+    
+    bool success = false;
+    
+    // Dispatch to appropriate stage processor
+    switch (m_currentStage) {
+    case STAGE_DARK_CALIBRATION:
+        success = processImageDarkCalibration(currentFile);
+        break;
+    case STAGE_PLATE_SOLVING:
+        success = processImagePlatesolving(currentFile);
+        break;
+    case STAGE_REGISTRATION:
+        success = processImageRegistration(currentFile);
+        break;
+    case STAGE_STACKING:
+        success = processImageStacking(currentFile);
+        break;
+    default:
+        logMessage(QString("Unknown processing stage: %1").arg(m_currentStage), "red");
+        success = false;
+        break;
+    }
+    
+    // Update counters
+    if (success) {
+        m_processedCount++;
+    } else {
+        m_errorCount++;
+    }
+    
+    // Update progress
+    m_currentImageIndex++;
+    m_progressBar->setValue(m_currentImageIndex);
+    updateProcessingStatus();
+    
+    // Update time estimate
+    updateTimeEstimate();
+    
+    // Schedule next iteration
+    QTimer::singleShot(10, this, &StellinaProcessor::processNextImage);
+}
+
+void StellinaProcessor::handlePipelineStageTransition() {
+    logMessage(QString("Completing stage: %1").arg(getStageDescription()), "blue");
+    
+    // Finalize current stage
+    bool stageSuccess = true;
+    switch (m_currentStage) {
+    case STAGE_DARK_CALIBRATION:
+        stageSuccess = finalizeDarkCalibrationStage();
+        break;
+    case STAGE_PLATE_SOLVING:
+        stageSuccess = finalizePlatesolvingStage();
+        break;
+    case STAGE_REGISTRATION:
+        stageSuccess = finalizeRegistrationStage();
+        break;
+    case STAGE_STACKING:
+        stageSuccess = finalizeStackingStage();
+        break;
+    default:
+        break;
+    }
+    
+    if (!stageSuccess) {
+        logMessage("Stage finalization failed", "red");
+        finishProcessing();
+        return;
+    }
+    
+    // Move to next stage
+    switch (m_currentStage) {
+    case STAGE_DARK_CALIBRATION:
+        m_currentStage = STAGE_PLATE_SOLVING;
+        if (!setupPlatesolvingStage()) {
+            finishProcessing();
+            return;
+        }
+        break;
+    case STAGE_PLATE_SOLVING:
+        m_currentStage = STAGE_REGISTRATION;
+        if (!setupRegistrationStage()) {
+            finishProcessing();
+            return;
+        }
+        break;
+    case STAGE_REGISTRATION:
+        m_currentStage = STAGE_STACKING;
+        if (!setupStackingStage()) {
+            finishProcessing();
+            return;
+        }
+        break;
+    case STAGE_STACKING:
+        m_currentStage = STAGE_COMPLETE;
+        finishProcessing();
+        return;
+    default:
+        m_currentStage = STAGE_COMPLETE;
+        finishProcessing();
+        return;
+    }
+    
+    // Reset for new stage
+    m_currentImageIndex = 0;
+    m_progressBar->setMaximum(m_imagesToProcess.length());
+    m_progressBar->setValue(0);
+    
+    logMessage(QString("Starting stage: %1").arg(getStageDescription()), "blue");
+    
+    // Start processing the new stage
+    QTimer::singleShot(10, this, &StellinaProcessor::processNextImage);
+}
+
+void StellinaProcessor::finishProcessing() {
+    m_processing = false;
+    m_processingTimer->stop();
+    
+    qint64 totalTime = QDateTime::currentMSecsSinceEpoch() - m_processingStartTime;
+    double totalMinutes = totalTime / 60000.0;
+    
+    QString completionMessage = QString("Processing complete! Total time: %1 minutes")
+                               .arg(totalMinutes, 0, 'f', 1);
+    
+    if (m_errorCount > 0) {
+        completionMessage += QString(" (%1 errors)").arg(m_errorCount);
+    }
+    
+    logMessage(completionMessage, "green");
+    
+    // Generate final report
+    generateFileReport();
+    
+    // Update UI
+    updateProcessingStatus();
+    updateUI();
+    
+    // Clean up temporary files
+    cleanupTemporaryFiles();
+}
+*/
+// ============================================================================
+// Input Validation
+// ============================================================================
+/*
+bool StellinaProcessor::validateProcessingInputs() {
+    if (m_sourceDirectory.isEmpty()) {
+        QMessageBox::warning(this, "Directory Error", 
+                           "Please select the raw light frames directory.");
+        return false;
+    }
+    
+    QDir sourceDir(m_sourceDirectory);
+    if (!sourceDir.exists()) {
+        QMessageBox::warning(this, "Directory Error", 
+                           "Source directory does not exist.");
+        return false;
+    }
+    
+    // Validate mode-specific requirements
+    switch (m_processingMode) {
+    case MODE_BASIC_PLATESOLVE:
+    case MODE_FULL_PIPELINE:
+        // These modes need source directory (already checked)
+        break;
+        
+    case MODE_DARK_CALIBRATION:
+        // Dark calibration mode needs source directory (already checked)
+        if (m_calibratedDirectory.isEmpty()) {
+            QMessageBox::warning(this, "Directory Error", 
+                               "Please select calibrated output directory.");
+            return false;
+        }
+        break;
+        
+    case MODE_ASTROMETRIC_STACKING:
+        // Stacking mode needs plate-solved images
+        if (m_plateSolvedDirectory.isEmpty()) {
+            QMessageBox::warning(this, "Directory Error", 
+                               "Please select plate-solved images directory for stacking.");
+            return false;
+        }
+        
+        QDir plateSolvedDir(m_plateSolvedDirectory);
+        if (!plateSolvedDir.exists()) {
+            QMessageBox::warning(this, "Directory Error", 
+                               "Plate-solved directory does not exist.");
+            return false;
+        }
+        break;
+    }
+    
+    return true;
+}
+
+// ============================================================================
+// Status and Utility Functions
+// ============================================================================
+
+QString StellinaProcessor::getStageDescription() const {
+    switch (m_currentStage) {
+    case STAGE_DARK_CALIBRATION: return "Dark Calibration";
+    case STAGE_PLATE_SOLVING: return "Plate Solving";
+    case STAGE_REGISTRATION: return "Registration";
+    case STAGE_STACKING: return "Stacking";
+    case STAGE_COMPLETE: return "Complete";
+    default: return "Unknown";
+    }
+}
+
+void StellinaProcessor::updateProcessingStatus() {
+    QString stageText = getStageDescription();
+    
+    switch (m_currentStage) {
+    case STAGE_DARK_CALIBRATION:
+        m_darkCalibrationStatusLabel->setText(QString("Dark Calibration: %1").arg(
+            m_processing ? "In Progress" : "Ready"));
+        break;
+    case STAGE_PLATE_SOLVING:
+        m_registrationStatusLabel->setText("Plate Solving: In Progress");
+        break;
+    case STAGE_REGISTRATION:
+        m_registrationStatusLabel->setText("Registration: In Progress");
+        break;
+    case STAGE_STACKING:
+        m_stackingStatusLabel->setText("Stacking: In Progress");
+        break;
+    case STAGE_COMPLETE:
+        m_darkCalibrationStatusLabel->setText("Dark Calibration: Complete");
+        m_registrationStatusLabel->setText("Registration: Complete");
+        m_stackingStatusLabel->setText("Stacking: Complete");
+        break;
+    }
+    
+    if (m_processing) {
+        QString statusText;
+        if (m_currentStage == STAGE_STACKING && m_stacking_initialized) {
+            statusText = getStackingStatusDescription();
+        } else {
+            statusText = QString("Processing %1 of %2 images (Stage: %3) - Success: %4, Errors: %5")
+                        .arg(m_currentImageIndex + 1)
+                        .arg(m_imagesToProcess.length())
+                        .arg(stageText)
+                        .arg(m_processedCount)
+                        .arg(m_errorCount);
+        }
+        
+        m_progressLabel->setText(statusText);
+        
+        if (m_darkCalibratedCount > 0) {
+            m_darkCalibrationStatusLabel->setText(
+                QString("Dark Calibration: %1 completed").arg(m_darkCalibratedCount));
+        }
+    }
+}
+*/
+void StellinaProcessor::updateTimeEstimate() {
+    if (m_currentImageIndex == 0 || !m_processing) {
+        return;
+    }
+    
+    qint64 elapsed = QDateTime::currentMSecsSinceEpoch() - m_processingStartTime;
+    double avgTimePerImage = static_cast<double>(elapsed) / m_currentImageIndex;
+    double remainingImages = m_imagesToProcess.length() - m_currentImageIndex;
+    double estimatedRemainingTime = avgTimePerImage * remainingImages;
+    
+    QString timeText = QString("ETA: %1 minutes")
+                      .arg(estimatedRemainingTime / 60000.0, 0, 'f', 1);
+    
+    if (m_statusLabel) {
+        m_statusLabel->setText(timeText);
+    }
+}
+
+// ============================================================================
+// Registration Stage Placeholder
+// ============================================================================
+
+bool StellinaProcessor::setupRegistrationStage() {
+    m_currentStage = STAGE_REGISTRATION;
+    logMessage("Registration stage setup (placeholder)", "orange");
+    
+    // For now, just pass through plate-solved images
+    // In a full implementation, this would setup image registration
+    return true;
+}
+
+bool StellinaProcessor::processImageRegistration(const QString &currentFile) {
+    // Placeholder: just pass through the file
+    logMessage(QString("Registration (placeholder): %1")
+              .arg(QFileInfo(currentFile).fileName()), "orange");
+    return true;
+}
+
+bool StellinaProcessor::finalizeRegistrationStage() {
+    logMessage("Registration stage finalized (placeholder)", "orange");
+    return true;
 }
 
 // Add these helper functions to StellinaProcessor_Core.cpp
@@ -227,7 +646,7 @@ void StellinaProcessor::diagnoseTrackingIssue() {
     logMessage("3. Your coordinate conversion should use the ACTUAL Alt/Az from each image", "gray");
     logMessage("4. NOT a fixed Alt/Az converted at different times", "gray");
 }
-
+/*
 // Corrected processing logic
 bool StellinaProcessor::processImagePlatesolving_Fixed(const QString &calibratedFitsPath) {
     m_currentTaskLabel->setText("Plate solving...");
@@ -337,7 +756,7 @@ void StellinaProcessor::verifyCorrectProcessing() {
     logMessage("Your plate solving is working correctly!", "green");
     logMessage("The coordinate errors you see are mount accuracy, not bugs.", "green");
 }
-
+*/
 // Add this diagnostic to understand what's really happening
 void StellinaProcessor::analyzeRealCoordinateErrors() {
     logMessage("=== REAL COORDINATE ERROR ANALYSIS ===", "blue");
@@ -443,7 +862,7 @@ QString StellinaProcessor::extractDateObs(const QString &fitsFile) {
     
     return QString();
 }
-
+/*
 // Also add this helper function to parse observer location more robustly
 bool StellinaProcessor::parseObserverLocation(const QString &location, double &lat, double &lon, double &elevation) {
     // Default values (London)
@@ -533,7 +952,7 @@ void StellinaProcessor::saveSettings() {
     settings.setValue("processingMode", static_cast<int>(m_processingMode));
     saveWCSSettings();
 }
-
+*/
 QString StellinaProcessor::getOutputDirectoryForCurrentStage() const {
     switch (m_currentStage) {
     case STAGE_DARK_CALIBRATION:
@@ -776,7 +1195,7 @@ void StellinaProcessor::scanDarkFrames() {
         logMessage(QString("Found: %1").arg(summary.join(", ")), "blue");
     }
 }
-
+/*
 // Dark calibration functions
 bool StellinaProcessor::findMatchingDarkFrame(const QString &lightFrame, DarkFrame &darkFrame) {
     // This method is now deprecated - we always use findAllMatchingDarkFrames instead
@@ -1258,7 +1677,7 @@ bool StellinaProcessor::performAstrometricStacking() {
     
     return true;
 }
-
+*/
 QJsonObject StellinaProcessor::loadStellinaJson(const QString &jsonPath) {
     QFile file(jsonPath);
     if (!file.open(QIODevice::ReadOnly)) {
@@ -1305,7 +1724,7 @@ bool StellinaProcessor::extractCoordinates(const QJsonObject &json, double &alt,
     
     return false;
 }
-
+/*
 bool StellinaProcessor::checkStellinaQuality(const QJsonObject &json) {
     if (json.contains("stackingData")) {
         QJsonObject stackingData = json["stackingData"].toObject();
@@ -1350,7 +1769,7 @@ bool StellinaProcessor::checkStellinaQuality(const QJsonObject &json) {
     
     return true;
 }
-
+*/
 QString StellinaProcessor::formatProcessingTime(qint64 milliseconds) {
     qint64 seconds = milliseconds / 1000;
     qint64 minutes = seconds / 60;
@@ -1403,6 +1822,7 @@ void StellinaProcessor::saveProcessingReport() {
     reportFile.close();
     logMessage(QString("Processing report saved: %1").arg(QFileInfo(reportPath).fileName()), "blue");
 }
+/*
 // Add these test functions to StellinaProcessor_Core.cpp
 // Call testLibnovaConversion() from your constructor or a menu action for verification
 
@@ -2163,7 +2583,7 @@ bool StellinaProcessor::updateProcessingStage(const QString &fitsPath, const QSt
 }
 
 // Add this diagnostic function to StellinaProcessor_Core.cpp to debug sidereal time issues
-
+*/
 void StellinaProcessor::diagnoseSiderealTimeIssues() {
     logMessage("=== SIDEREAL TIME DIAGNOSTIC ===", "blue");
     
@@ -2306,7 +2726,7 @@ void StellinaProcessor::diagnoseSiderealTimeIssues() {
 double StellinaProcessor::calculateLST_HighPrecision(double JD, double longitude) {
     return 12.0 / M_PI * CoordinateUtils::localSiderealTime(longitude, JD);
 }
-
+/*
 // DIAGNOSTIC: Test the LST calculation accuracy
 void StellinaProcessor::diagnoseLSTAccuracy() {
     logMessage("=== LST CALCULATION ACCURACY TEST ===", "blue");
@@ -2365,7 +2785,7 @@ void StellinaProcessor::diagnoseLSTAccuracy() {
     
     logMessage("=== END LST ACCURACY TEST ===", "blue");
 }
-
+*/
 // TEST: Verify the fix eliminates time drift
 void StellinaProcessor::testTimeDriftFix() {
     logMessage("=== TESTING TIME DRIFT FIX ===", "blue");
@@ -2427,9 +2847,10 @@ void StellinaProcessor::testTimeDriftFix() {
     
     logMessage("=== END TIME DRIFT TEST ===", "blue");
 }
+/*
 // THE REAL ISSUE: Stellina coordinates vs solve-field coordinates
 // Your LST calculation is now PERFECT. The issue is understanding what Stellina provides.
-
+*/
 void StellinaProcessor::analyzeRealStellinaIssue() {
     logMessage("=== UNDERSTANDING THE REAL STELLINA COORDINATE ISSUE ===", "blue");
     
@@ -3211,7 +3632,7 @@ bool StellinaProcessor::readStellinaDataFromSolvedFits(const QString &fitsPath, 
     fits_close_file(fptr, &status);
     return true;
 }
-
+/*
 // Helper function to read solve-field results from WCS headers
 bool StellinaProcessor::readSolveFieldResults(const QString &fitsPath, ProcessedImageData &data) {
     fitsfile *fptr = nullptr;
@@ -3261,7 +3682,7 @@ bool StellinaProcessor::readSolveFieldResults(const QString &fitsPath, Processed
 }
 // Update the analyzeAndCalibrateFromData function to use linear regression
 // Replace the existing function in StellinaProcessor_Core.cpp
-
+*/
 void StellinaProcessor::analyzeAndCalibrateFromData(const QList<ProcessedImageData> &imageData, 
                                                    const double &sessionStart) {
     logMessage("", "gray");
@@ -3679,7 +4100,7 @@ void StellinaProcessor::saveMountTiltToSettings() {
         logMessage("Mount drift correction parameters saved to settings", "gray");
     }
 }
-
+/*
 bool StellinaProcessor::loadMountTiltFromSettings() {
     QSettings settings;
     
@@ -3703,7 +4124,7 @@ bool StellinaProcessor::loadMountTiltFromSettings() {
     
     return m_mountTilt.enableCorrection;
 }
-
+*/
 // Replace the testSystematicOffsetCorrection function with this real data version
 // Add to StellinaProcessor_Core.cpp
 
@@ -4591,6 +5012,7 @@ bool StellinaProcessor::parseStackingJSON(const QString &jsonPath, StackingCorre
     data.isValid = true;
     return true;
 }
+
 // Improved stacking analysis that handles mosaic patterns
 // Replace the analyzeStackingCorrections function with this version
 

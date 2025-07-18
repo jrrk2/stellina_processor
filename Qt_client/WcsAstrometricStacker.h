@@ -1,5 +1,5 @@
-// Replace the WCS-related parts in WcsAstrometricStacker.h
-// Updated header structure
+// Refactored WcsAstrometricStacker.h with modular stacking support
+// Updated to support subframe processing and simplified pixel structures
 
 #ifndef WCS_ASTROMETRIC_STACKER_H
 #define WCS_ASTROMETRIC_STACKER_H
@@ -16,12 +16,57 @@
 #include <fitsio.h>
 #include <vector>
 #include <memory>
+#include <array>
 #include <cmath>
-#include "StellinaProcessor.h"
 
 // Forward declarations
 struct StellinaImageData;
-struct StackingParams;
+struct PixelAccumulator;
+
+// Stacking parameters - unified structure for both WCS and traditional stacking
+typedef struct StackingParams {
+    enum CombinationMethod {
+        MEAN,
+        MEDIAN, 
+        WEIGHTED_MEAN,
+        SIGMA_CLIPPED_MEAN,
+        MINIMUM,
+        MAXIMUM
+    };
+    
+    enum RejectionMethod {
+        NO_REJECTION,
+        SIGMA_CLIPPING,
+        PERCENTILE_CLIPPING,
+        LINEAR_FIT_CLIPPING
+    };
+    
+    CombinationMethod combination = WEIGHTED_MEAN;
+    RejectionMethod rejection = SIGMA_CLIPPING;
+    double sigma_low = 3.0;           // Low sigma clipping threshold
+    double sigma_high = 3.0;          // High sigma clipping threshold
+    double percentile_low = 5.0;      // Low percentile (%)
+    double percentile_high = 95.0;    // High percentile (%)
+    bool normalize_exposure = true;   // Normalize by exposure time
+    bool apply_flat_correction = false; // Apply flat field correction
+    bool apply_brightness_normalization = false; // Apply brightness normalisation
+    double output_pixel_scale = 0.0;  // Override pixel scale (0 = auto)
+    int output_width = 0;             // Override width (0 = auto)
+    int output_height = 0;            // Override height (0 = auto)
+    bool create_weight_map = true;    // Generate output weight map
+    bool save_intermediate = false;   // Save reprojected images
+    QString output_format = "fits";   // Output format
+} StackingParams;
+
+// Simplified pixel contribution structure - only stores essential data
+struct PixelContribution {
+    float value;
+    float weight;
+    uint8_t bayer_color;  // 0=R, 1=G1, 2=G2, 3=B (for RGGB pattern)
+    
+    PixelContribution(float v, float w, uint8_t color) 
+        : value(v), weight(w), bayer_color(color) {}
+};
 
 // Simple TAN projection WCS implementation
 struct SimpleTANWCS {
@@ -63,16 +108,6 @@ struct WCSImageData {
                     stellina_correction_magnitude(0.0), stellina_stars_used(0) {}
 };
 
-// Structure to hold pixel contributions for each target location
-struct PixelContribution {
-    float value;
-    float weight;
-    size_t source_image_index;
-    
-    PixelContribution(float v, float w, size_t idx) 
-        : value(v), weight(w), source_image_index(idx) {}
-};
-
 class WCSAstrometricStacker : public QObject {
     Q_OBJECT
 
@@ -86,7 +121,7 @@ public:
     void setStackingParameters(const StackingParams &params);
     void setProgressWidgets(QProgressBar *progress, QLabel *status);
     
-    // Core stacking process
+    // Core stacking process - now modular
     bool computeOptimalWCS();
     bool stackImages();
     bool saveResult(const QString &output_path);
@@ -99,6 +134,7 @@ public:
     cv::Mat getStackedImage() const { return m_stacked_image; }
     cv::Mat getWeightMap() const { return m_weight_map; }
     cv::Mat getOverlapMap() const { return m_overlap_map; }
+    cv::Mat getNoiseMap() const { return m_noise_map; }
     SimpleTANWCS getOutputWCS() const { return m_output_wcs; }
     
     // Statistics
@@ -109,6 +145,21 @@ public:
     // Processing control
     void startStacking();
     void cancelStacking();
+    
+    // Modular stacking functions
+    bool processImageSubframe(
+        const std::unique_ptr<WCSImageData>& img_data,
+        std::vector<PixelAccumulator>& pixel_accumulators,
+        int start_row, int end_row,
+        const QString& bayer_pattern,
+        size_t img_idx);
+    
+    bool finalizeStackedImage(const std::vector<PixelAccumulator>& pixel_accumulators);
+    // Post-processing functions
+    void generateQualityMaps();
+    void applyBrightnessNormalization();
+    cv::Size getOutputSize() { return m_output_size; }
+    bool loadWCSFromFITS(const QString &fits_file, WCSImageData &img_data);
 
 signals:
     void progressUpdated(int percentage);
@@ -117,22 +168,31 @@ signals:
     void stackingComplete(bool success);
     void errorOccurred(const QString &error);
     void qualityAnalysisComplete();
-
-private slots:
-  //    void processNextImage();
-
+    
 private:
-    // Core processing functions
-    bool loadWCSFromFITS(const QString &fits_file, WCSImageData &img_data);
+    // Core processing functions - now modular
     bool extractImageStatistics(WCSImageData &img_data);
     bool computeImageQualityScore(WCSImageData &img_data);
+    
+    // Pixel processing utilities
+    float calculatePixelWeight(
+        const std::unique_ptr<WCSImageData>& img_data,
+        int target_x, int target_y, float pixel_value);
+    
+    float applySigmaClipping(const PixelAccumulator& acc, int x, int y);
+    
+    // Bayer pattern utilities
+    QString determineBayerPattern(const QString& filename);
+    void logBayerStatistics(const std::vector<PixelAccumulator>& pixel_accumulators);
+        
+    // Legacy compatibility functions
     bool addPlatesolveDFITSFile(const QString &solved_fits_file);
     bool addImageFromStellinaData(const QString &fits_file, const StellinaImageData &stellina_data);
     void saveOverlapMap(const cv::Mat& overlap_count, const QString& output_path);
     void analyzeOverlapDistribution(const cv::Mat& overlap_count);
-    void logOverlapStatistics() ;
-    void applyGlobalBrightnessNormalization() ;
-    void applySigmaClipping(std::vector<PixelContribution>& contributions, int x, int y) ;
+    void logOverlapStatistics();
+    void applyGlobalBrightnessNormalization();
+    void applySigmaClipping(std::vector<PixelContribution>& contributions, int x, int y);
   
     // Utility functions
     void updateProgress(int percentage, const QString &message);
@@ -168,6 +228,19 @@ private:
     double m_total_processing_time;
     int m_pixels_processed;
     int m_pixels_rejected;
+    
+    // Modular processing constants
+    static const int DEFAULT_SUBFRAME_HEIGHT = 256;
+    static const int MIN_CONTRIBUTIONS_FOR_SIGMA_CLIPPING = 3;
 };
+
+// Bayer pattern utilities (can be used by other classes)
+namespace BayerUtils {
+    enum BayerColor { RED = 0, GREEN1 = 1, GREEN2 = 2, BLUE = 3 };
+    
+    uint8_t getBayerColor(int x, int y, const QString& pattern);
+    QString normalizeBayerPattern(const QString& pattern);
+    bool isValidBayerPattern(const QString& pattern);
+}
 
 #endif // WCS_ASTROMETRIC_STACKER_H

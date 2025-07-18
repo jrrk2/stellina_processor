@@ -7,8 +7,8 @@ TEMPLATE = app
 
 # Version info
 VERSION = 1.0.0
-QMAKE_TARGET_PRODUCT = "Stellina Processor for Siril"
-QMAKE_TARGET_DESCRIPTION = "Qt application for processing Stellina telescope images using Siril"
+QMAKE_TARGET_PRODUCT = "Stellina Processor"
+QMAKE_TARGET_DESCRIPTION = "Qt application for processing Stellina telescope images"
 QMAKE_TARGET_COPYRIGHT = "Copyright (C) 2025"
 
 # macOS specific settings
@@ -49,6 +49,11 @@ SOURCES += \
     StellinaProcessor_UI.cpp \
     StellinaProcessor_Utils.cpp \
     StellinaProcessor_WCS_Integration.cpp \
+    StellinaProcessor_FITS.cpp \
+    StellinaProcessor_DarkCalibration.cpp \
+    StellinaProcessor_PlateSolving.cpp \
+    StellinaProcessor_Stacking.cpp \
+    StellinaProcessor_FileOperations.cpp \
     WcsAstrometricStacker.cpp \
     CoordinateUtils.cpp \
     

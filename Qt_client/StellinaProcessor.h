@@ -28,6 +28,36 @@
 #include <QElapsedTimer>
 #include <QProcessEnvironment>
 #include <fitsio.h>
+#include <opencv2/opencv.hpp>
+#include <QProcessEnvironment>
+#include "WcsAstrometricStacker.h"
+#include "CoordinateUtils.h"
+
+// Memory-efficient pixel accumulator
+struct PixelAccumulator {
+    float sum_value;
+    float sum_weight;
+    uint8_t contribution_count;
+    uint8_t primary_bayer_color;  // Most common bayer color for this pixel
+    
+    PixelAccumulator() : sum_value(0.0f), sum_weight(0.0f),
+                        contribution_count(0), primary_bayer_color(0) {}
+    
+    void addContribution(float value, float weight, uint8_t bayer_color) {
+        sum_value += value * weight;
+        sum_weight += weight;
+        contribution_count++;
+        
+        // Track primary bayer color (simple majority vote)
+        if (contribution_count == 1) {
+            primary_bayer_color = bayer_color;
+        }
+    }
+    
+    float getFinalValue() const {
+        return (sum_weight > 0.0f) ? (sum_value / sum_weight) : 0.0f;
+    }
+};
 
 //============================================================================
 // 2. ADD THESE FORWARD DECLARATIONS (if not already present)
@@ -41,41 +71,6 @@ enum ProcessingMode {
     MODE_DARK_CALIBRATION = 1,
     MODE_ASTROMETRIC_STACKING = 2,
     MODE_FULL_PIPELINE = 3
-};
-
-// Stacking parameters - unified structure for both WCS and traditional stacking
-struct StackingParams {
-    enum CombinationMethod {
-        MEAN,
-        MEDIAN, 
-        WEIGHTED_MEAN,
-        SIGMA_CLIPPED_MEAN,
-        MINIMUM,
-        MAXIMUM
-    };
-    
-    enum RejectionMethod {
-        NO_REJECTION,
-        SIGMA_CLIPPING,
-        PERCENTILE_CLIPPING,
-        LINEAR_FIT_CLIPPING
-    };
-    
-    CombinationMethod combination = WEIGHTED_MEAN;
-    RejectionMethod rejection = SIGMA_CLIPPING;
-    double sigma_low = 3.0;           // Low sigma clipping threshold
-    double sigma_high = 3.0;          // High sigma clipping threshold
-    double percentile_low = 5.0;      // Low percentile (%)
-    double percentile_high = 95.0;    // High percentile (%)
-    bool normalize_exposure = true;   // Normalize by exposure time
-    bool apply_flat_correction = false; // Apply flat field correction
-    bool apply_brightness_normalization = false; // Apply brightness normalisation
-    double output_pixel_scale = 0.0;  // Override pixel scale (0 = auto)
-    int output_width = 0;             // Override width (0 = auto)
-    int output_height = 0;            // Override height (0 = auto)
-    bool create_weight_map = true;    // Generate output weight map
-    bool save_intermediate = false;   // Save reprojected images
-    QString output_format = "fits";   // Output format
 };
 
 // Dark frame information
@@ -113,7 +108,9 @@ struct StellinaImageData {
     bool isReversedImage;         // True if this is a reversed stellina image (img-0001r.fits)
     QString bayerPattern;         // Detected bayer pattern (e.g., "RGGB", "GRBG", "GBRG", "BGGR")
     QString baseName;             // Base name without 'r' suffix (e.g., "img-0001")
-    
+    bool hasValidWCS;
+    QString processingStage;
+  
     StellinaImageData() : altitude(0), azimuth(0), hasValidCoordinates(false), 
                          exposureSeconds(0), temperatureKelvin(284), binning("1x1"),
 			  calculatedRA(0), calculatedDec(0), hasCalculatedCoords(false), isReversedImage(false), bayerPattern("RGGB")  {}
@@ -122,6 +119,7 @@ struct StellinaImageData {
     bool hasPreCalculatedCoords() const {
         return hasCalculatedCoords && calculatedRA != 0.0 && calculatedDec != 0.0;
     }
+
 };
 
 struct StackingCorrectionData {
@@ -158,9 +156,9 @@ struct ProcessedImageData {
     QString dateObs;
     QDateTime obsTime;
     double minutesFromStart;
-    bool isValid;
+    double pixelScale;
+    bool isValid, hasValidWCS;
 };
-
 
 struct CoordinateTestCase {
     QString name;
@@ -251,9 +249,156 @@ private slots:
     void onWCSProgressUpdated(int percentage);
     void onWCSStatusUpdated(const QString &message);
     void onSaveWCSResult();
-  
+
 private:
-    // Session timing state
+    // ============================================================================
+    // FITS Operations (StellinaProcessor_FITS.cpp)
+    // ============================================================================
+    
+    // FITS I/O operations
+    bool loadFITSImage(const QString &fitsPath, cv::Mat &image);
+    bool saveFITSImage(const QString &fitsPath, const cv::Mat &image);
+    bool copyFITSHeaders(const QString &sourcePath, const QString &destPath);
+    
+    // FITS validation
+    bool validateFITSFile(const QString &fitsPath);
+    bool hasStellinaMetadata(const QString &fitsPath);
+    QString getBayerPatternFromFits(const QString &fitsPath);
+    
+    // Helper functions
+    bool cleanExistingStellinaKeywordsFITS(fitsfile *fptr);
+    bool readStellinaDataFromJSON(const QString &jsonPath, StellinaImageData &data);
+    
+    // ============================================================================
+    // Dark Calibration Operations (StellinaProcessor_DarkCalibration.cpp)
+    // ============================================================================
+    
+    // Dark calibration stage functions
+    bool setupDarkCalibrationStage();
+    bool processImageDarkCalibration(const QString &currentFile);
+    bool finalizeDarkCalibrationStage();
+    
+    // Dark frame management
+    bool loadDarkFrames();
+    bool matchDarkFrame(const StellinaImageData &imageData, DarkFrame &bestMatch);
+    bool createMasterDark(const QList<DarkFrame> &darkFrames, const QString &outputPath);
+    bool applyMasterDark(const QString &lightFrame, const QString &masterDark, const QString &outputFrame);
+    
+    // Dark frame utilities
+    bool extractDarkFrameMetadata(const QString &darkPath, DarkFrame &dark);
+    bool validateDarkFrameCompatibility(const DarkFrame &dark, const StellinaImageData &light);
+    QString generateMasterDarkPath(const DarkFrame &darkTemplate);
+    
+    // ============================================================================
+    // Plate Solving Operations (StellinaProcessor_PlateSolving.cpp)
+    // ============================================================================
+    
+    // Plate solving stage functions
+    bool setupPlatesolvingStage();
+    bool processImagePlatesolving(const QString &currentFile);
+    bool finalizePlatesolvingStage();
+    
+    // Plate solving core operations
+    bool runSolveField(const QString &inputPath, const QString &outputPath, double ra, double dec);
+    bool validateSolveFieldResult(const QString &solvedPath);
+    
+    // Coordinate calculation
+    bool calculateImageCoordinates(StellinaImageData &imageData);
+    bool convertStellinaToEquatorial(const StellinaImageData &stellinaData, double &ra, double &dec);
+    
+    // Plate solving utilities
+    QString generatePlateSolvedPath(const QString &inputPath);
+    bool cleanupSolveFieldTemporaryFiles(const QString &inputPath);
+    bool estimateFieldOfView(const QString &fitsPath, double &fovWidth, double &fovHeight);
+    QStringList getSupportedSolveFieldOptions();
+    
+    // ============================================================================
+    // Stacking Operations (StellinaProcessor_Stacking.cpp)
+    // ============================================================================
+    
+    // Stacking stage functions (symmetric)
+    bool setupStackingStage();
+    bool processImageStacking(const QString &currentFile);
+    bool finalizeStackingStage();
+    
+    // Stacking utilities
+    bool initializePixelAccumulators();
+    QString determineBayerPattern(const QString &filename);
+    size_t findImageIndex(const QString &filePath);
+    
+    // Stacking modes
+    bool performLegacyStacking();
+    bool performModularAstrometricStacking();
+    
+    // Stacking analysis
+    void analyzeStackingQuality();
+    bool validateStackingInputs();
+    void updateStackingProgress(int percentage, const QString &message);
+    QString getStackingStatusDescription() const;
+    
+    // ============================================================================
+    // File Operations (StellinaProcessor_FileOperations.cpp)
+    // ============================================================================
+    
+    // File discovery and validation
+    bool findStellinaImages();
+    bool validateImageFile(const QString &filePath);
+    QStringList findMatchingFiles(const QString &directory, const QStringList &patterns);
+    QStringList findFilesWithMetadata(const QString &directory);
+    
+    // File path utilities
+    QString generateOutputPath(const QString &inputPath, const QString &prefix, const QString &directory);
+    QString generateUniqueOutputPath(const QString &inputPath, const QString &prefix, const QString &directory);
+    bool ensureDirectoryExists(const QString &directory);
+    bool createOutputDirectories();
+    
+    // File backup and safety
+    bool createBackup(const QString &filePath);
+    bool restoreBackup(const QString &filePath);
+    bool cleanupBackups(const QString &directory);
+    
+    // Temporary file management
+    bool cleanupTemporaryFiles();
+    QString createTemporaryFile(const QString &prefix, const QString &suffix);
+    
+    // File metadata and tracking
+    StellinaImageData* findImageDataByOriginalPath(const QString &originalPath);
+    bool updateImageDataPath(const QString &oldPath, const QString &newPath);
+    QStringList getProcessedFilePaths(const QString &stage) const;
+    
+    // File statistics and analysis
+    void analyzeFileStatistics();
+    bool checkDiskSpace(const QString &directory, qint64 requiredMB);
+    void generateFileReport();
+    
+    // Main processing control
+    void startStellinaProcessing();
+    void stopProcessing();
+    void pauseProcessing();
+    void processNextImage();
+    void finishProcessing();
+    
+    // Status and utilities
+    void updateProcessingStatus();
+    void updateTimeEstimate();
+    QString getStageDescription() const;
+    bool validateProcessingInputs();
+    
+    // Registration stage placeholders
+    bool setupRegistrationStage();
+    bool processImageRegistration(const QString &currentFile);
+    bool finalizeRegistrationStage();
+
+// ============================================================================
+// Additional Member Variables (add to private section)
+// ============================================================================
+
+    // Stacking state variables
+    std::unique_ptr<WCSAstrometricStacker> m_stacker;
+    std::vector<PixelAccumulator> m_pixel_accumulators;
+    bool m_stacking_initialized;
+    int m_stacking_subframe_row;
+    static const int STACKING_SUBFRAME_HEIGHT = 256;    // Session timing state
     static QDateTime s_sessionReferenceTime;
     static qint64 s_sessionReferenceAcqTime;
     static bool s_sessionTimingInitialized;
@@ -297,18 +442,11 @@ private:
     void connectSignals();
     void updateUI();
     void updateConnectionStatus();
-    void updateProcessingStatus();
     void logMessage(const QString &message, const QString &color = "black");
     void loadSettings();
     void saveSettings();
     
     // Processing functions
-    void startStellinaProcessing();
-    void processNextImage();
-    bool processImageDarkCalibration(const QString &lightFrame);
-    bool processImagePlatesolving(const QString &fitsPath);
-    void finishProcessing();
-    bool findStellinaImages();
     QJsonObject loadStellinaJson(const QString &jsonPath);
     bool extractCoordinates(const QJsonObject &json, double &alt, double &az);
     bool convertAltAzToRaDec(double alt, double az, const QString &dateObs, double &ra, double &dec);
@@ -316,7 +454,6 @@ private:
 					       double &ra, double &dec, double &observer_lat, double &observer_lon,
 						   double &jd, double &lst, double &ha) ;
     bool checkStellinaQuality(const QJsonObject &json);
-    QString getStageDescription() const;
     void runCoordinateTestSuite();
     void testSingleCoordinate(const CoordinateTestCase &testCase);
     QList<CoordinateTestCase> getCoordinateTestCases();
@@ -356,7 +493,6 @@ private:
   QStringList findAllMatchingDarkFrames(int targetExposure, int targetTemperature, 
                                                         const QString &targetBinning, 
 							   const QString &targetBayerPattern);
-  void loadDarkFrames() ;
   
     // Mount tilt correction functions
     void applyMountTiltCorrection(double &alt, double &az, double inputAlt, double inputAz);
@@ -377,7 +513,6 @@ private:
     QStringList findAllMatchingDarkFrames(int targetExposure, int targetTemperature, const QString &targetBinning);
     bool createMasterDark(const QStringList &darkFrames, const QString &outputPath);
     bool createMasterDarkDirect(const QStringList &darkFrames, const QString &outputPath);
-    bool applyMasterDark(const QString &lightFrame, const QString &masterDark, const QString &outputFrame);
     int extractExposureTime(const QString &fitsFile);
     int extractTemperature(const QString &fitsFile);
     QString extractBinning(const QString &fitsFile);
@@ -388,11 +523,10 @@ private:
     bool stackRegisteredImages(const QStringList &registeredImages, const QString &outputStack);
     bool createSequence(const QStringList &imageList, const QString &sequenceName);
     bool performGlobalRegistration(const QString &sequenceName);
-    bool performStacking(const QString &sequenceName, const StackingParams &params);
+    bool performStacking(const QString &sequenceName, const struct StackingParams &params);
     
     // Utility functions
     QString formatProcessingTime(qint64 milliseconds);
-    bool validateProcessingInputs();
     void saveProcessingReport();
     QString getOutputDirectoryForCurrentStage() const;
     bool applyMasterDarkDirect(const QString &lightFrame, const QString &masterDark, const QString &outputFrame);
@@ -405,7 +539,6 @@ private:
                              double expectedRA = 0.0, double expectedDec = 0.0,
                              double currentRA = 0.0, double currentDec = 0.0,
                              double testLat = 0.0, double testLon = 0.0);
-    bool runSolveField(const QString &fitsPath, const QString &outputPath, double ra, double dec);
     bool checkSolveFieldInstalled();
     bool createBinnedImageForPlatesolving(const QString &inputPath, const QString &binnedPath);
     bool performCFABinning(const std::vector<float> &inputPixels, std::vector<float> &binnedPixels, 
@@ -531,7 +664,7 @@ private:
     
     // WCS Astrometric Stacker
     WCSAstrometricStacker *m_wcsStacker;
-    StackingParams m_wcsStackingParams;  // Changed from WCSStackingParams to StackingParams
+    struct StackingParams m_wcsStackingParams;  // Changed from WCSStackingParams to StackingParams
     
     // WCS Stacking UI elements
     QGroupBox *m_wcsStackingGroup;
@@ -596,7 +729,7 @@ private:
     int m_exposureTolerance;
     
     // Stacking settings
-    StackingParams m_stackingParams;  // Legacy params for backward compatibility
+    struct StackingParams m_stackingParams;  // Legacy params for backward compatibility
     
     // File tracking for pipeline
     QStringList m_darkCalibratedFiles;
@@ -609,9 +742,6 @@ private:
     QList<StellinaImageData> m_stellinaImageData;  // Tracks metadata through pipeline
 
     // Stage setup functions for clean pipeline flow
-    bool setupDarkCalibrationStage();
-    bool setupPlatesolvingStage();
-    bool setupStackingStage();
     void handlePipelineStageTransition();
     
     // FITS metadata functions - enhanced version that includes coordinate conversion

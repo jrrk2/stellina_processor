@@ -70,7 +70,7 @@ void StellinaProcessor::startStellinaProcessing() {
     // Start processing timer
     m_processingTimer->start();
 }
-
+/*
 // New setup functions for each stage
 bool StellinaProcessor::setupDarkCalibrationStage() {
     m_currentStage = STAGE_DARK_CALIBRATION;
@@ -181,7 +181,7 @@ bool StellinaProcessor::setupStackingStage() {
     
     return true;
 }
-
+*/
 // Simplified processNextImage that doesn't handle stage transitions
 void StellinaProcessor::processNextImage() {
     if (m_currentImageIndex >= m_imagesToProcess.length()) {
@@ -282,7 +282,7 @@ void StellinaProcessor::handlePipelineStageTransition() {
         break;
     }
 }
-
+/*
 // Simplified plate solving that only works with calibrated files
 bool StellinaProcessor::processImagePlatesolving(const QString &calibratedFitsPath) {
     m_currentTaskLabel->setText("Plate solving...");
@@ -351,7 +351,7 @@ bool StellinaProcessor::processImagePlatesolving(const QString &calibratedFitsPa
     m_plateSolvedFiles.append(outputPath);
     return true;
 }
-
+*/
 bool StellinaProcessor::validateProcessingInputs() {
     if (m_sourceDirectory.isEmpty()) {
         QMessageBox::warning(this, "Directory Error", "Please select the raw light frames directory.");
@@ -636,7 +636,7 @@ QProcessEnvironment StellinaProcessor::createSolveFieldEnvironment() {
     
     return env;
 }
-
+/*
 bool StellinaProcessor::runSolveField(const QString &fitsPath, const QString &outputPath, double ra, double dec) {
     logMessage(QString("Running solve-field with coordinate hints: RA=%1°, Dec=%2°").arg(ra, 0, 'f', 4).arg(dec, 0, 'f', 4), "blue");
     
@@ -743,3 +743,4 @@ bool StellinaProcessor::runSolveField(const QString &fitsPath, const QString &ou
         return false;
     }
 }
+*/
