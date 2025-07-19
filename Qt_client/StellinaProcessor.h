@@ -305,8 +305,10 @@ private:
     // Processing functions
     void startStellinaProcessing();
     void processNextImage();
-    bool processImageDarkCalibration(const QString &lightFrame);
-    bool processImagePlatesolving(const QString &fitsPath);
+    bool processImageDarkCalibration();
+    bool processImagePlatesolving();
+    bool processImageStacking();
+    bool processImageIntegration();
     void finishProcessing();
     bool findStellinaImages();
     QJsonObject loadStellinaJson(const QString &jsonPath);
@@ -389,6 +391,7 @@ private:
     bool createSequence(const QStringList &imageList, const QString &sequenceName);
     bool performGlobalRegistration(const QString &sequenceName);
     bool performStacking(const QString &sequenceName, const StackingParams &params);
+    void endStacking();
     
     // Utility functions
     QString formatProcessingTime(qint64 milliseconds);
@@ -419,8 +422,6 @@ private:
     void loadWCSSettings();
     void saveWCSSettings();
     
-    // Enhanced processing methods
-    bool performAstrometricStackingEnhanced();
     // NEW: Debug tab and components
     QWidget *m_debugTab;
     void setupDebugTab();
@@ -544,9 +545,10 @@ private:
     QSpinBox *m_wcsOutputWidthSpin;
     QSpinBox *m_wcsOutputHeightSpin;
     QDoubleSpinBox *m_wcsOutputPixelScaleSpin;
+/*
     QPushButton *m_startWCSStackingButton;
     QPushButton *m_saveWCSResultButton;
-  
+*/
     // Status bar
     QLabel *m_statusLabel;
     QLabel *m_memoryUsageLabel;
@@ -560,6 +562,7 @@ private:
     QStringList m_imagesToProcess;
     QList<DarkFrame> m_darkFrames;
     int m_currentImageIndex;
+    int m_currentIntegrationRow;
     int m_processedCount;
     int m_errorCount;
     int m_skippedCount;
@@ -571,8 +574,8 @@ private:
     enum ProcessingStage {
         STAGE_DARK_CALIBRATION,
         STAGE_PLATE_SOLVING,
-        STAGE_REGISTRATION,
         STAGE_STACKING,
+        STAGE_INTEGRATION,
         STAGE_COMPLETE
     };
     ProcessingStage m_currentStage;
@@ -611,6 +614,8 @@ private:
     bool setupDarkCalibrationStage();
     bool setupPlatesolvingStage();
     bool setupStackingStage();
+    bool setupIntegrationStage();
+    bool accumulateStacking();
     void handlePipelineStageTransition();
     
     // FITS metadata functions - enhanced version that includes coordinate conversion

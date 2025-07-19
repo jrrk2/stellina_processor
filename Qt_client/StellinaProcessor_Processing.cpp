@@ -1,4 +1,5 @@
 #include "StellinaProcessor.h"
+#include "WcsAstrometricStacker.h"
 #include <QApplication>
 #include <QDir>
 #include <QProcess>
@@ -142,41 +143,136 @@ bool StellinaProcessor::setupPlatesolvingStage() {
     
     logMessage(QString("Plate solving stage: found %1 calibrated images to process")
                   .arg(validFiles), "blue");
-    
+
+    m_currentImageIndex = 0;
+    return true;
+}
+
+bool StellinaProcessor::setupIntegrationStage() {
+    m_currentStage = STAGE_INTEGRATION;
+    m_currentIntegrationRow = 0;
+    m_currentImageIndex = 0;
+    m_progressBar->setMaximum( m_wcsStacker->getOutputHeight() / 256);
+    m_progressBar->setValue(0);
+    updateProcessingStatus();
     return true;
 }
 
 bool StellinaProcessor::setupStackingStage() {
-    m_currentStage = STAGE_REGISTRATION;
-    
-    // Stacking uses plate-solved images
-    QDir plateSolvedDir(m_plateSolvedDirectory);
-    if (m_plateSolvedDirectory.isEmpty() || !plateSolvedDir.exists()) {
-        logMessage("Astrometric stacking requires plate-solved images directory to be set", "red");
+        m_currentStage = STAGE_STACKING;
+        
+    QDir solvedDir(m_plateSolvedDirectory);
+    if (!solvedDir.exists()) {
+        logMessage(QString("Solved directory does not exist: '%1'").arg(m_sourceDirectory), "red");
         return false;
     }
     
-    QStringList plateSolvedFiles = plateSolvedDir.entryList(
-        QStringList() << "plate_solved_*.fits" << "*solved*.fits", 
-        QDir::Files);
+    logMessage(QString("Scanning directory: %1").arg(solvedDir.absolutePath()), "blue");
     
-    if (plateSolvedFiles.isEmpty()) {
-        logMessage("No plate-solved images found for stacking", "red");
-        logMessage("Run plate solving first or select a directory with plate-solved images", "red");
-        return false;
-    }
+    QStringList fitsFiles = solvedDir.entryList(QStringList() << "*.fits" << "*.fit" << "*.FITS" << "*.FIT", QDir::Files);
+    logMessage(QString("Found %1 FITS files").arg(fitsFiles.count()), "blue");
     
+    int loaded = 0;
+    int qualityRejected = 0;
+    int reversedImages = 0;
     // Build full paths
     m_imagesToProcess.clear();
-    for (const QString &fileName : plateSolvedFiles) {
-        m_imagesToProcess.append(plateSolvedDir.absoluteFilePath(fileName));
+    // Set up WCS stacker with current plate-solved files
+    m_wcsStacker->setProgressWidgets(m_subTaskProgressBar, m_currentTaskLabel);
+    
+    for (const QString &fitsFile : fitsFiles) {
+        StellinaImageData imageData;
+        imageData.originalFitsPath = solvedDir.absoluteFilePath(fitsFile);
+        imageData.currentFitsPath = imageData.originalFitsPath;
+        
+        // Check if this is a reversed stellina image
+        imageData.isReversedImage = isReversedStellinaImage(fitsFile);
+        if (imageData.isReversedImage) {
+            reversedImages++;
+            logMessage(QString("Found reversed Stellina image: %1").arg(fitsFile), "blue");
+        }
+        
+        // Get base name (without 'r' suffix for reversed images)
+        imageData.baseName = getBaseName(fitsFile);
+        
+        // Detect bayer pattern
+        imageData.bayerPattern = detectBayerPattern(imageData.originalFitsPath);
+        
+        QString baseName = QFileInfo(fitsFile).baseName();
+        
+        imageData.hasValidCoordinates = true;
+        
+        // Extract FITS metadata
+        imageData.exposureSeconds = extractExposureTime(imageData.originalFitsPath);
+        imageData.temperatureKelvin = extractTemperature(imageData.originalFitsPath);
+        imageData.binning = extractBinning(imageData.originalFitsPath);
+        imageData.dateObs = extractDateObs(imageData.originalFitsPath);
+        
+        // Quality filtering
+        if (m_qualityFilter && !checkStellinaQuality(imageData.metadata)) {
+            qualityRejected++;
+            if (m_debugMode) {
+                logMessage(QString("Rejected due to invalid coordinates: %1").arg(fitsFile), "orange");
+            }
+            qualityRejected++;
+            continue;
+        }
+        
+        m_stellinaImageData.append(imageData);
+        m_imagesToProcess.append(imageData.originalFitsPath);
+        if (m_wcsStacker->addImageWithMetadata(imageData.originalFitsPath, imageData)) {
+            loaded++;
+        }
     }
     
+    qDebug() << "image to process" << m_imagesToProcess.size();
     logMessage(QString("Astrometric stacking stage: found %1 plate-solved images")
-                  .arg(m_imagesToProcess.size()), "blue");
+               .arg(m_imagesToProcess.size()), "blue");
     
     if (m_imagesToProcess.size() < 3) {
         logMessage("Warning: Need at least 3 images for effective stacking", "orange");
+    }
+    
+    if (loaded < 3) {
+        logMessage(QString("Only loaded %1 images for WCS stacking").arg(loaded), "red");
+        return false;
+    }
+    
+    // Start WCS stacking
+    if (!m_wcsStacker->beginStackWCSImages()) {
+        logMessage("Begin WCS stacking failed", "red");
+        return false;
+    }
+
+    
+    return true;
+}
+
+bool StellinaProcessor::accumulateStacking() {
+    
+    // accumulate images
+    for (size_t i = 0; i < m_wcsStacker->getImageCount(); ++i) m_wcsStacker->imageAccumWCS(i);
+
+    // accumulate mapped pixels
+    for (int y = 0; y < m_wcsStacker->getOutputHeight(); ++y) m_wcsStacker->pixelAccumWCS(y);
+    // End WCS stacking
+    if (!m_wcsStacker->endStackWCSImages()) {
+        logMessage("End WCS stacking failed", "red");
+        return false;
+    }
+
+    // Save result automatically
+    QString outputName = QString("wcs_stacked_%1.fits")
+                           .arg(QDateTime::currentDateTime().toString("yyyyMMdd_hhmmss"));
+    QString outputPath = QDir(getOutputDirectoryForCurrentStage()).absoluteFilePath(outputName);
+    
+    if (m_wcsStacker->saveResult(outputPath)) {
+        m_finalStackedImage = outputPath;
+        logMessage(QString("WCS stacking completed: %1").arg(outputName), "green");
+        return true;
+    } else {
+        logMessage("Failed to save WCS stacked result", "red");
+        return false;
     }
     
     return true;
@@ -184,38 +280,43 @@ bool StellinaProcessor::setupStackingStage() {
 
 // Simplified processNextImage that doesn't handle stage transitions
 void StellinaProcessor::processNextImage() {
-    if (m_currentImageIndex >= m_imagesToProcess.length()) {
+    bool complete = m_currentStage == STAGE_INTEGRATION ? m_currentIntegrationRow >= m_wcsStacker->getOutputHeight() :
+        m_currentImageIndex >= m_imagesToProcess.length();
+    
+    if (complete) {
         // Current stage complete
         if (m_processingMode == MODE_FULL_PIPELINE) {
             // Handle pipeline stage transitions
             handlePipelineStageTransition();
-        } else {
+        } else if (m_processingMode == MODE_ASTROMETRIC_STACKING && m_currentStage == STAGE_STACKING) {
+            setupIntegrationStage();
+            } else {
             // Single stage complete
             finishProcessing();
         }
         return;
     }
     
-    QString currentFile = m_imagesToProcess[m_currentImageIndex];
-    
-    logMessage(QString("Processing %1 of %2: %3")
-                  .arg(m_currentImageIndex + 1)
+    if (m_currentStage != STAGE_INTEGRATION)
+        logMessage(QString("Processing %1 of %2: %3")
+                  .arg(m_currentImageIndex)
                   .arg(m_imagesToProcess.length())
-                  .arg(QFileInfo(currentFile).fileName()), "blue");
+                  .arg(QFileInfo(m_imagesToProcess[m_currentImageIndex]).fileName()), "blue");
     
     bool success = false;
     
     switch (m_currentStage) {
     case STAGE_DARK_CALIBRATION:
-        success = processImageDarkCalibration(currentFile);
+        success = processImageDarkCalibration();
         break;
     case STAGE_PLATE_SOLVING:
-        success = processImagePlatesolving(currentFile);
+        success = processImagePlatesolving();
         break;
-    case STAGE_REGISTRATION:
     case STAGE_STACKING:
-        // These stages will be handled by performAstrometricStacking()
-        success = true; // Just advance through the list
+        success = processImageStacking();
+        break;
+    case STAGE_INTEGRATION:
+        success = processImageIntegration();
         break;
     default:
         logMessage(QString("Unknown processing stage: %1").arg(m_currentStage), "red");
@@ -260,23 +361,28 @@ void StellinaProcessor::handlePipelineStageTransition() {
         }
         break;
         
-    case STAGE_PLATE_SOLVING:
-        logMessage("Plate solving stage complete, setting up astrometric stacking...", "blue");
-        if (setupStackingStage()) {
-            m_currentStage = STAGE_REGISTRATION;
-            if (performAstrometricStackingEnhanced()) {
-                m_currentStage = STAGE_COMPLETE;
-                finishProcessing();
+        case STAGE_PLATE_SOLVING:
+            logMessage("Plate solving stage complete, setting up astrometric stacking...", "blue");
+            if (setupStackingStage()) {
+                m_currentImageIndex = 0;
+                m_progressBar->setMaximum(m_imagesToProcess.length());
+                m_progressBar->setValue(0);
+                updateProcessingStatus();
             } else {
-                logMessage("Astrometric stacking failed", "red");
+                logMessage("Failed to set up stacking stage", "red");
                 finishProcessing();
             }
-        } else {
-            logMessage("Failed to set up stacking stage", "red");
-            finishProcessing();
-        }
-        break;
-        
+            break;
+            
+        case STAGE_STACKING:
+            logMessage("Stacking complete, setting up image integration...", "blue");
+            if (setupIntegrationStage()) {
+            } else {
+                logMessage("Failed to set up stacking stage", "red");
+                finishProcessing();
+            }
+            break;
+
     default:
         finishProcessing();
         break;
@@ -284,8 +390,9 @@ void StellinaProcessor::handlePipelineStageTransition() {
 }
 
 // Simplified plate solving that only works with calibrated files
-bool StellinaProcessor::processImagePlatesolving(const QString &calibratedFitsPath) {
+bool StellinaProcessor::processImagePlatesolving() {
     m_currentTaskLabel->setText("Plate solving...");
+    const QString &calibratedFitsPath = m_imagesToProcess[m_currentImageIndex];
     
     // This function now ONLY processes calibrated files
     if (!calibratedFitsPath.contains("calibrated") && !calibratedFitsPath.contains(m_calibratedDirectory)) {
@@ -423,11 +530,11 @@ void StellinaProcessor::updateProcessingStatus() {
     case STAGE_PLATE_SOLVING:
         // Keep existing registration/stacking status as ready for now
         break;
-    case STAGE_REGISTRATION:
-        m_registrationStatusLabel->setText("Registration: In Progress");
-        break;
     case STAGE_STACKING:
         m_stackingStatusLabel->setText("Stacking: In Progress");
+        break;
+    case STAGE_INTEGRATION:
+        m_registrationStatusLabel->setText("Integration: In Progress");
         break;
     case STAGE_COMPLETE:
         m_darkCalibrationStatusLabel->setText("Dark Calibration: Complete");
@@ -454,7 +561,7 @@ QString StellinaProcessor::getStageDescription() const {
     switch (m_currentStage) {
     case STAGE_DARK_CALIBRATION: return "Dark Calibration";
     case STAGE_PLATE_SOLVING: return "Plate Solving";
-    case STAGE_REGISTRATION: return "Registration";
+    case STAGE_INTEGRATION: return "Integration";
     case STAGE_STACKING: return "Stacking";
     case STAGE_COMPLETE: return "Complete";
     default: return "Unknown";
@@ -487,6 +594,7 @@ void StellinaProcessor::finishProcessing() {
         break;
         
     case MODE_ASTROMETRIC_STACKING:
+        endStacking();
         completionMessage += QString("Images processed: %1, Errors: %2, Total: %3")
                                 .arg(m_processedCount)
                                 .arg(m_errorCount)
@@ -497,6 +605,7 @@ void StellinaProcessor::finishProcessing() {
         break;
         
     case MODE_FULL_PIPELINE:
+        endStacking();
         completionMessage += QString("Dark calibrated: %1, Plate solved: %2, Errors: %3, Total: %4")
                                 .arg(m_darkCalibratedCount)
                                 .arg(m_processedCount)

@@ -124,7 +124,7 @@ void StellinaProcessor::setupWCSStackingUI() {
     m_wcsOutputPixelScaleSpin->setDecimals(2);
     m_wcsOutputPixelScaleSpin->setSpecialValueText("Auto");
     wcsLayout->addWidget(m_wcsOutputPixelScaleSpin, 6, 1, 1, 2);
-    
+/*
     // Control buttons
     QHBoxLayout *wcsButtonLayout = new QHBoxLayout;
     m_startWCSStackingButton = new QPushButton("Start WCS Stacking");
@@ -135,9 +135,9 @@ void StellinaProcessor::setupWCSStackingUI() {
     wcsButtonLayout->addWidget(m_startWCSStackingButton);
     wcsButtonLayout->addWidget(m_saveWCSResultButton);
     wcsButtonLayout->addStretch();
-    
+
     wcsLayout->addLayout(wcsButtonLayout, 7, 0, 1, 4);
-    
+*/
     // Add to stacking tab layout
     QVBoxLayout *stackingTabLayout = qobject_cast<QVBoxLayout*>(m_stackingTab->layout());
     if (stackingTabLayout) {
@@ -163,11 +163,12 @@ void StellinaProcessor::setupWCSStackingUI() {
             this, &StellinaProcessor::onWCSParametersChanged);
     connect(m_wcsOutputPixelScaleSpin, QOverload<double>::of(&QDoubleSpinBox::valueChanged),
             this, &StellinaProcessor::onWCSParametersChanged);
-    
+/*
     connect(m_startWCSStackingButton, &QPushButton::clicked,
             this, &StellinaProcessor::onStartWCSStacking);
     connect(m_saveWCSResultButton, &QPushButton::clicked,
             this, &StellinaProcessor::onSaveWCSResult);
+ */
 }
 
 void StellinaProcessor::onWCSParametersChanged() {
@@ -259,27 +260,33 @@ void StellinaProcessor::onStartWCSStacking() {
     }
     
     logMessage(QString("Successfully loaded %1 images for WCS stacking").arg(successfullyLoaded), "green");
-    
+/*
     // Update UI state
     m_startWCSStackingButton->setEnabled(false);
     m_startWCSStackingButton->setText("Stacking...");
     m_saveWCSResultButton->setEnabled(false);
-    
+
     // Start the stacking process
     m_wcsStacker->startStacking();
+ */
+    QMessageBox::critical(this, "Loading Error",
+                         QString("Not implemented"));
+    return;
+
 }
 
 void StellinaProcessor::onWCSStackingComplete(bool success) {
     // Restore UI state
+/*
     m_startWCSStackingButton->setEnabled(true);
     m_startWCSStackingButton->setText("Start WCS Stacking");
-    
+*/
     if (success) {
         logMessage("WCS astrometric stacking completed successfully!", "green");
-        
+/*
         // Enable save button
         m_saveWCSResultButton->setEnabled(true);
-        
+*/
         // Show completion statistics
         QString stats = QString("Stacking Statistics:\n"
                                "- Images processed: %1\n"
@@ -308,9 +315,10 @@ void StellinaProcessor::onWCSStackingComplete(bool success) {
                                 "WCS astrometric stacking completed successfully!\n\n" + stats);
     } else {
         logMessage("WCS astrometric stacking failed.", "red");
-        m_saveWCSResultButton->setEnabled(false);
-        
-        QMessageBox::critical(this, "Stacking Failed", 
+/*
+ m_saveWCSResultButton->setEnabled(false);
+ */
+        QMessageBox::critical(this, "Stacking Failed",
                              "WCS astrometric stacking failed. Check the log for details.");
     }
     
@@ -383,63 +391,6 @@ void StellinaProcessor::onSaveWCSResult() {
     }
 }
 
-bool StellinaProcessor::performAstrometricStackingEnhanced() {
-    if (m_plateSolvedFiles.isEmpty()) {
-        logMessage("No plate-solved images available for stacking", "red");
-        return false;
-    }
-    
-    if (m_plateSolvedFiles.size() < 3) {
-        logMessage("Need at least 3 images for stacking", "red");
-        return false;
-    }
-    
-        logMessage("Using WCS-based astrometric stacking", "blue");
-        
-        // Set up WCS stacker with current plate-solved files
-        m_wcsStacker->setProgressWidgets(m_subTaskProgressBar, m_currentTaskLabel);
-        
-        int loaded = 0;
-        for (const QString &filePath : m_plateSolvedFiles) {
-            StellinaImageData *imageData = findImageDataByPath(filePath);
-            if (imageData) {
-                if (m_wcsStacker->addImageWithMetadata(filePath, *imageData)) {
-                    loaded++;
-                }
-            } else {
-                if (m_wcsStacker->addImage(filePath)) {
-                    loaded++;
-                }
-            }
-        }
-        
-        if (loaded < 3) {
-            logMessage(QString("Only loaded %1 images for WCS stacking").arg(loaded), "red");
-            return false;
-        }
-        
-        // Start WCS stacking
-        if (!m_wcsStacker->stackImages()) {
-            logMessage("WCS stacking failed", "red");
-            return false;
-        }
-        
-        // Save result automatically
-        QString outputName = QString("wcs_stacked_%1.fits")
-                               .arg(QDateTime::currentDateTime().toString("yyyyMMdd_hhmmss"));
-        QString outputPath = QDir(getOutputDirectoryForCurrentStage()).absoluteFilePath(outputName);
-        
-        if (m_wcsStacker->saveResult(outputPath)) {
-            m_finalStackedImage = outputPath;
-            logMessage(QString("WCS stacking completed: %1").arg(outputName), "green");
-            return true;
-        } else {
-            logMessage("Failed to save WCS stacked result", "red");
-            return false;
-        }
-        
-}
-
 void StellinaProcessor::addWCSMenuItems() {
     // This should be called from your setupMenu() function
     QMenu *wcsMenu = menuBar()->addMenu("WCS &Stacking");
@@ -494,14 +445,14 @@ void StellinaProcessor::updateWCSUI() {
     bool hasPlatesolved = !m_plateSolvedDirectory.isEmpty() && 
                          QDir(m_plateSolvedDirectory).exists();
     bool hasWCSResult = false; // !m_wcsStacker->getStackedImage().empty();
-    
+/*
     if (m_startWCSStackingButton) {
         m_startWCSStackingButton->setEnabled(hasPlatesolved && !m_processing);
     }
     if (m_saveWCSResultButton) {
         m_saveWCSResultButton->setEnabled(hasWCSResult && !m_processing);
     }
-    
+*/
     // Update combination method enable/disable based on rejection method
     bool usingSigmaClipping = (m_wcsStackingParams.rejection == StackingParams::SIGMA_CLIPPING);
     if (m_wcsSigmaLowSpin) {

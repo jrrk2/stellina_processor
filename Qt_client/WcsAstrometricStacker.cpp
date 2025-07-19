@@ -19,39 +19,8 @@
 #include <vector>
 #include <cmath>
 
-// Replace the main stacking function with this list-based approach
-bool WCSAstrometricStacker::stackImages() {
-    updateProgress(0, "Starting list-based astrometric stacking...");
-    
-    if (m_images.empty()) {
-        emit errorOccurred("No images loaded for stacking");
-        return false;
-    }
-    
-    // Step 1: Compute optimal output WCS and dimensions
-    updateProgress(5, "Computing optimal output coordinate system...");
-    if (!computeOptimalWCS()) {
-        emit errorOccurred("Failed to compute optimal WCS");
-        return false;
-    }
-    
-    // Initialize output images
-    m_stacked_image = cv::Mat::zeros(m_output_size, CV_32F);
-    m_weight_map = cv::Mat::zeros(m_output_size, CV_32F);
-    m_overlap_map = cv::Mat::zeros(m_output_size, CV_8U);
-    
-    // Step 2: Create pixel contribution lists for each target pixel
-    updateProgress(10, "Initializing pixel contribution lists...");
-    
-    // Each target pixel gets its own list of contributions
-    std::vector<std::vector<PixelContribution>> pixel_lists(
-        m_output_size.height * m_output_size.width
-    );
-    
-    // Step 3: Accumulate contributions from all images
-    m_pixels_processed = 0;
-    
-    for (size_t i = 0; i < m_images.size(); ++i) {
+void WCSAstrometricStacker::imageAccumWCS(size_t i)
+      {
         updateProgress(10 + (i * 70) / m_images.size(), 
                        QString("Processing image %1 of %2: %3")
                        .arg(i+1)
@@ -62,7 +31,7 @@ bool WCSAstrometricStacker::stackImages() {
         if (!img->wcs_valid || img->image.empty()) {
             logProcessing(QString("Skipping invalid image: %1")
                          .arg(QFileInfo(img->filename).fileName()));
-            continue;
+            return;
         }
         
         // Calculate base image weight
@@ -115,7 +84,7 @@ bool WCSAstrometricStacker::stackImages() {
                                 if (std::isfinite(pixelValue)) {
                                     // Add contribution to target pixel's list
                                     int targetIndex = y * m_output_size.width + x;
-                                    pixel_lists[targetIndex].emplace_back(
+                                    m_pixel_lists[targetIndex].emplace_back(
                                         pixelValue, imageWeight, i
                                     );
                                     
@@ -133,17 +102,49 @@ bool WCSAstrometricStacker::stackImages() {
                      .arg(i+1)
                      .arg(pixelsProcessedThisImage));
     }
+
+// Replace the main stacking function with this list-based approach
+bool WCSAstrometricStacker::beginStackWCSImages() {
+    updateProgress(0, "Starting list-based astrometric stacking...");
     
-    // Step 4: Process each target pixel's contribution list
-    updateProgress(80, "Computing final pixel values...");
+    if (m_images.empty()) {
+        emit errorOccurred("No images loaded for stacking");
+        return false;
+    }
     
+    // Step 1: Compute optimal output WCS and dimensions
+    updateProgress(5, "Computing optimal output coordinate system...");
+    if (!computeOptimalWCS()) {
+        emit errorOccurred("Failed to compute optimal WCS");
+        return false;
+    }
+    
+    // Initialize output images
+    m_stacked_image = cv::Mat::zeros(m_output_size, CV_32F);
+    m_weight_map = cv::Mat::zeros(m_output_size, CV_32F);
+    m_overlap_map = cv::Mat::zeros(m_output_size, CV_8U);
+    
+    // Step 2: Create pixel contribution lists for each target pixel
+    updateProgress(10, "Initializing pixel contribution lists...");
+    
+    m_pixel_lists = std::vector<std::vector<PixelContribution>> (
+        m_output_size.height * m_output_size.width
+    );
+
+ // Step 3: Accumulate contributions from all images (continues in pixelAccum)
+    m_pixels_processed = 0;
     m_pixels_rejected = 0;
-    bool useSigmaClipping = (m_params.rejection == StackingParams::SIGMA_CLIPPING);
     
-    for (int y = 0; y < m_output_size.height; ++y) {
+    return true;
+}
+
+bool WCSAstrometricStacker::pixelAccumWCS(int y)
+    {
+          bool useSigmaClipping = (m_params.rejection == StackingParams::SIGMA_CLIPPING);
+
         for (int x = 0; x < m_output_size.width; ++x) {
             int targetIndex = y * m_output_size.width + x;
-            auto& contributions = pixel_lists[targetIndex];
+            auto& contributions = m_pixel_lists[targetIndex];
             
             if (contributions.empty()) {
                 // No contributions for this pixel
@@ -192,7 +193,12 @@ bool WCSAstrometricStacker::stackImages() {
                 }
             }
         }
+    return true;
     }
+
+bool WCSAstrometricStacker::endStackWCSImages() {
+    // Step 4: Process each target pixel's contribution list
+    updateProgress(80, "Computing final pixel values...");
     
     // Step 5: Apply optional additional brightness normalization
     updateProgress(90, "Applying final brightness normalization...");
@@ -858,7 +864,39 @@ bool WCSAstrometricStacker::addImage(const QString &fits_file, const QString &so
 }
 
 bool WCSAstrometricStacker::addImageWithMetadata(const QString &fits_file, const StellinaImageData &stellina_data) {
-    return addImageFromStellinaData(fits_file, stellina_data);
+    auto img_data = std::make_unique<WCSImageData>();
+    
+    // Load FITS image and WCS from plate-solved file
+    if (!loadWCSFromFITS(fits_file, *img_data)) {
+        emit errorOccurred(QString("Failed to load WCS from: %1").arg(fits_file));
+        return false;
+    }
+    
+    // Integrate Stellina-specific data
+    img_data->exposure_time = stellina_data.exposureSeconds;
+    img_data->obs_time = QDateTime::fromString(stellina_data.dateObs, "yyyy-MM-ddThh:mm:ss");
+    if (!img_data->obs_time.isValid()) {
+        img_data->obs_time = QDateTime::fromString(stellina_data.dateObs, "yyyy-MM-ddThh:mm:ss.zzz");
+    }
+    
+    // Use Stellina quality metrics if available
+    if (stellina_data.hasValidCoordinates) {
+        img_data->stellina_correction_magnitude = sqrt(pow(stellina_data.altitude, 2) +
+                                                      pow(stellina_data.azimuth, 2));
+    }
+    
+    // Extract image statistics and compute quality score
+    extractImageStatistics(*img_data);
+    computeImageQualityScore(*img_data);
+    
+    m_images.push_back(std::move(img_data));
+    
+    emit imageProcessed(fits_file);
+    logProcessing(QString("Added Stellina image: %1 (quality: %2)")
+                 .arg(QFileInfo(fits_file).fileName())
+                 .arg(m_images.back()->quality_score, 0, 'f', 3));
+    
+    return true;
 }
 
 void WCSAstrometricStacker::setStackingParameters(const StackingParams &params) {
@@ -913,43 +951,6 @@ bool WCSAstrometricStacker::addPlatesolveDFITSFile(const QString &solved_fits_fi
     emit imageProcessed(solved_fits_file);
     logProcessing(QString("Added FITS file: %1 (quality: %2)")
                  .arg(QFileInfo(solved_fits_file).fileName())
-                 .arg(m_images.back()->quality_score, 0, 'f', 3));
-    
-    return true;
-}
-
-bool WCSAstrometricStacker::addImageFromStellinaData(const QString &fits_file, 
-                                                    const StellinaImageData &stellina_data) {
-    auto img_data = std::make_unique<WCSImageData>();
-    
-    // Load FITS image and WCS from plate-solved file
-    if (!loadWCSFromFITS(fits_file, *img_data)) {
-        emit errorOccurred(QString("Failed to load WCS from: %1").arg(fits_file));
-        return false;
-    }
-    
-    // Integrate Stellina-specific data
-    img_data->exposure_time = stellina_data.exposureSeconds;
-    img_data->obs_time = QDateTime::fromString(stellina_data.dateObs, "yyyy-MM-ddThh:mm:ss");
-    if (!img_data->obs_time.isValid()) {
-        img_data->obs_time = QDateTime::fromString(stellina_data.dateObs, "yyyy-MM-ddThh:mm:ss.zzz");
-    }
-    
-    // Use Stellina quality metrics if available
-    if (stellina_data.hasValidCoordinates) {
-        img_data->stellina_correction_magnitude = sqrt(pow(stellina_data.altitude, 2) + 
-                                                      pow(stellina_data.azimuth, 2));
-    }
-    
-    // Extract image statistics and compute quality score
-    extractImageStatistics(*img_data);
-    computeImageQualityScore(*img_data);
-    
-    m_images.push_back(std::move(img_data));
-    
-    emit imageProcessed(fits_file);
-    logProcessing(QString("Added Stellina image: %1 (quality: %2)")
-                 .arg(QFileInfo(fits_file).fileName())
                  .arg(m_images.back()->quality_score, 0, 'f', 3));
     
     return true;
@@ -1017,6 +1018,7 @@ bool WCSAstrometricStacker::computeImageQualityScore(WCSImageData &img_data) {
     return true;
 }
 
+/*
 void WCSAstrometricStacker::startStacking() {
     if (m_images.empty()) {
         emit errorOccurred("No images loaded for stacking");
@@ -1028,7 +1030,7 @@ void WCSAstrometricStacker::startStacking() {
     
     updateProgress(0, "Starting TAN projection stacking...");
     
-    if (!stackImages()) {
+    if (!beginStackImages()) {
         emit errorOccurred("Stacking process failed");
         return;
     }
@@ -1036,6 +1038,7 @@ void WCSAstrometricStacker::startStacking() {
     analyzeImageQuality();
     emit qualityAnalysisComplete();
 }
+*/
 
 void WCSAstrometricStacker::cancelStacking() {
     m_stacking_active = false;

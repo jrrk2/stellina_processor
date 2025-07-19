@@ -1,4 +1,5 @@
 #include "StellinaProcessor.h"
+#include "WcsAstrometricStacker.h"
 #include "CoordinateUtils.h"
 #include <QApplication>
 #include <QDir>
@@ -516,9 +517,9 @@ bool StellinaProcessor::loadMountTiltFromSettings() {
 }
 
 // Modified processImageDarkCalibration to handle bayer patterns
-bool StellinaProcessor::processImageDarkCalibration(const QString &lightFrame) {
+bool StellinaProcessor::processImageDarkCalibration() {
     m_currentTaskLabel->setText("Dark calibration...");
-    
+    const QString lightFrame = m_imagesToProcess[m_currentImageIndex];
     // Find the corresponding StellinaImageData
     StellinaImageData imageData;
     bool found = false;
@@ -634,3 +635,37 @@ bool StellinaProcessor::processImageDarkCalibration(const QString &lightFrame) {
     }
 }
 
+bool StellinaProcessor::processImageStacking() {
+    m_currentTaskLabel->setText("processImageStacking...");
+    m_wcsStacker->imageAccumWCS(m_currentImageIndex);
+    return true;
+}
+
+bool StellinaProcessor::processImageIntegration() {
+    int last = m_currentIntegrationRow + 256;
+    if (last >= m_wcsStacker->getOutputHeight()) last = m_wcsStacker->getOutputHeight();
+    m_currentTaskLabel->setText("processImageIntegrating...");
+    for (; m_currentIntegrationRow < last; m_currentIntegrationRow++)
+        m_wcsStacker->pixelAccumWCS(m_currentIntegrationRow);
+    return true;
+}
+
+void StellinaProcessor::endStacking() {
+    // End WCS stacking
+    if (!m_wcsStacker->endStackWCSImages()) {
+        logMessage("End WCS stacking failed", "red");
+        return;
+    }
+
+    // Save result automatically
+    QString outputName = QString("wcs_stacked_%1.fits")
+                           .arg(QDateTime::currentDateTime().toString("yyyyMMdd_hhmmss"));
+    QString outputPath = QDir(getOutputDirectoryForCurrentStage()).absoluteFilePath(outputName);
+    
+    if (m_wcsStacker->saveResult(outputPath)) {
+        m_finalStackedImage = outputPath;
+        logMessage(QString("WCS stacking completed: %1").arg(outputName), "green");
+    } else {
+        logMessage("Failed to save WCS stacked result", "red");
+    }
+}

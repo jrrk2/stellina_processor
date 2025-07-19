@@ -540,8 +540,8 @@ QString StellinaProcessor::getOutputDirectoryForCurrentStage() const {
         return m_calibratedDirectory.isEmpty() ? m_sourceDirectory : m_calibratedDirectory;
     case STAGE_PLATE_SOLVING:
         return m_plateSolvedDirectory.isEmpty() ? m_sourceDirectory : m_plateSolvedDirectory;
-    case STAGE_REGISTRATION:
     case STAGE_STACKING:
+    case STAGE_INTEGRATION:
         return m_stackedDirectory.isEmpty() ? m_plateSolvedDirectory : m_stackedDirectory;
     case STAGE_COMPLETE:
         return m_stackedDirectory.isEmpty() ? m_plateSolvedDirectory : m_stackedDirectory;

@@ -83,13 +83,19 @@ public:
     // Main interface
     bool addImage(const QString &fits_file, const QString &solved_fits_file = "");
     bool addImageWithMetadata(const QString &fits_file, const struct StellinaImageData &stellina_data);
+    // bool addImageFromStellinaData(const QString &fits_file, const StellinaImageData &stellina_data);
     void setStackingParameters(const StackingParams &params);
     void setProgressWidgets(QProgressBar *progress, QLabel *status);
     
     // Core stacking process
     bool computeOptimalWCS();
-    bool stackImages();
+    bool beginStackWCSImages();
+    size_t getImageCount() { return m_images.size(); }
+    int getOutputHeight() { return m_output_size.height; }
+    bool endStackWCSImages();
     bool saveResult(const QString &output_path);
+    void imageAccumWCS(size_t i);
+    bool pixelAccumWCS(int y);
     
     // Quality analysis
     void analyzeImageQuality();
@@ -107,7 +113,7 @@ public:
     double getAverageQuality() const;
     
     // Processing control
-    void startStacking();
+    //    void startStacking();
     void cancelStacking();
 
 signals:
@@ -127,7 +133,6 @@ private:
     bool extractImageStatistics(WCSImageData &img_data);
     bool computeImageQualityScore(WCSImageData &img_data);
     bool addPlatesolveDFITSFile(const QString &solved_fits_file);
-    bool addImageFromStellinaData(const QString &fits_file, const StellinaImageData &stellina_data);
     void saveOverlapMap(const cv::Mat& overlap_count, const QString& output_path);
     void analyzeOverlapDistribution(const cv::Mat& overlap_count);
     void logOverlapStatistics() ;
@@ -144,6 +149,8 @@ private:
     SimpleTANWCS m_output_wcs;        // Target WCS for output
     cv::Size m_output_size;           // Output image dimensions
     double m_output_pixel_scale;      // Arcseconds per pixel
+    // Each target pixel gets its own list of contributions
+    std::vector<std::vector<PixelContribution>> m_pixel_lists;
     
     // Results
     cv::Mat m_stacked_image;          // Final stacked result
