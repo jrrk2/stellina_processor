@@ -197,7 +197,7 @@ bool WCSAstrometricStacker::pixelAccumWCS(int y)
                 if (contributions.size() > 0) {
                     // KEY INSIGHT: Divide by contribution count for brightness compensation
                     m_stacked_image_red.at<float>(y, x) = redSum / contributions.size();
-                    m_stacked_image_green.at<float>(y, x) = greenSum / contributions.size();
+                    m_stacked_image_green.at<float>(y, x) = greenSum / (2 * contributions.size());
                     m_stacked_image_blue.at<float>(y, x) = blueSum / contributions.size();
                     m_weight_map.at<float>(y, x) = contributions.size();
                 } else {
@@ -785,12 +785,14 @@ bool WCSAstrometricStacker::computeOptimalWCS() {
 }
 
 // Updated saveResult function
+
+// Updated saveResult function to save RGB color planes
 bool WCSAstrometricStacker::saveResult(const QString &output_path) {
-    if (m_stacked_image_green.empty()) {
+    if (m_stacked_image_red.empty() || m_stacked_image_green.empty() || m_stacked_image_blue.empty()) {
         return false;
     }
     
-    updateProgress(0, "Saving TAN projection result...");
+    updateProgress(0, "Saving RGB TAN projection result...");
     
     fitsfile *fptr = nullptr;
     int status = 0;
@@ -800,19 +802,31 @@ bool WCSAstrometricStacker::saveResult(const QString &output_path) {
         return false;
     }
     
-    long naxes[2] = {m_stacked_image_green.cols, m_stacked_image_green.rows};
-    if (fits_create_img(fptr, FLOAT_IMG, 2, naxes, &status)) {
+    // Create 3D FITS cube for RGB data: [width, height, 3]
+    long naxes[3] = {m_stacked_image_green.cols, m_stacked_image_green.rows, 3};
+    if (fits_create_img(fptr, FLOAT_IMG, 3, naxes, &status)) {
         fits_close_file(fptr, &status);
         return false;
     }
     
-    // Convert OpenCV Mat to FITS format
-    long totalPixels = m_stacked_image_green.rows * m_stacked_image_green.cols;
+    // Convert OpenCV Mats to FITS format
+    long totalPixelsPerPlane = m_stacked_image_green.rows * m_stacked_image_green.cols;
+    long totalPixels = totalPixelsPerPlane * 3;
     std::vector<float> pixels(totalPixels);
     
+    // Interleave RGB data: R plane, G plane, B plane
     for (int y = 0; y < m_stacked_image_green.rows; ++y) {
         for (int x = 0; x < m_stacked_image_green.cols; ++x) {
-            pixels[y * m_stacked_image_green.cols + x] = m_stacked_image_green.at<float>(y, x);
+            long baseIndex = y * m_stacked_image_green.cols + x;
+            
+            // Red plane (plane 0)
+            pixels[baseIndex] = m_stacked_image_red.at<float>(y, x);
+            
+            // Green plane (plane 1)
+            pixels[baseIndex + totalPixelsPerPlane] = m_stacked_image_green.at<float>(y, x);
+            
+            // Blue plane (plane 2)
+            pixels[baseIndex + 2 * totalPixelsPerPlane] = m_stacked_image_blue.at<float>(y, x);
         }
     }
     
@@ -849,6 +863,22 @@ bool WCSAstrometricStacker::saveResult(const QString &output_path) {
     fits_write_key(fptr, TSTRING, "CUNIT1", &cunit1_ptr, "Coordinate unit", &status);
     fits_write_key(fptr, TSTRING, "CUNIT2", &cunit2_ptr, "Coordinate unit", &status);
     
+    // Add RGB-specific keywords
+    char colorspace[] = "RGB";
+    char* colorspace_ptr = colorspace;
+    fits_write_key(fptr, TSTRING, "COLORSP", &colorspace_ptr, "Color space", &status);
+    
+    // Add plane descriptions
+    char plane1[] = "Red";
+    char plane2[] = "Green"; 
+    char plane3[] = "Blue";
+    char* plane1_ptr = plane1;
+    char* plane2_ptr = plane2;
+    char* plane3_ptr = plane3;
+    fits_write_key(fptr, TSTRING, "PLANE1", &plane1_ptr, "First plane content", &status);
+    fits_write_key(fptr, TSTRING, "PLANE2", &plane2_ptr, "Second plane content", &status);
+    fits_write_key(fptr, TSTRING, "PLANE3", &plane3_ptr, "Third plane content", &status);
+    
     // Add processing information
     int nimages = m_images.size();
     fits_write_key(fptr, TINT, "NSTACKED", &nimages, "Number of stacked images", &status);
@@ -857,19 +887,19 @@ bool WCSAstrometricStacker::saveResult(const QString &output_path) {
     fits_write_key(fptr, TDOUBLE, "PIXSCALE", &pixelScale, "Pixel scale (arcsec/pixel)", &status);
     
     // Add processing method
-    QString method = QString("TAN_PROJECTION_%1").arg(static_cast<int>(m_params.combination));
+    QString method = QString("TAN_PROJECTION_RGB_%1").arg(static_cast<int>(m_params.combination));
     QByteArray methodBytes = method.toLocal8Bit();
     char* methodPtr = methodBytes.data();
     fits_write_key(fptr, TSTRING, "STACKMET", &methodPtr, "Stacking method", &status);
     
     // Add history
-    QString history = QString("Stacked %1 images using TAN projection astrometric alignment").arg(nimages);
+    QString history = QString("Stacked %1 images using TAN projection astrometric alignment with RGB output").arg(nimages);
     QByteArray historyBytes = history.toLocal8Bit();
     fits_write_history(fptr, historyBytes.data(), &status);
     
     fits_close_file(fptr, &status);
     
-    updateProgress(100, "Save complete");
+    updateProgress(100, "RGB save complete");
     
     return (status == 0);
 }
