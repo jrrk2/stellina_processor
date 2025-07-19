@@ -41,7 +41,14 @@ INCLUDEPATH += .
 # Source files
 SOURCES += \
     main.cpp \
-    StellinaProcessor_Core.cpp \
+    StellinaProcessor_Core1.cpp \
+    StellinaProcessor_Core2.cpp \
+    StellinaProcessor_Core3.cpp \
+    StellinaProcessor_Core4.cpp \
+    StellinaProcessor_Core5.cpp \
+    StellinaProcessor_Core6.cpp \
+    StellinaProcessor_Core7.cpp \
+    StellinaProcessor_Core8.cpp \
     stellinaprocessor_plugin_import.cpp \
     StellinaProcessor_Processing.cpp \
     StellinaProcessor_Slots.cpp \
