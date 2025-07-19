@@ -46,6 +46,7 @@ struct WCSImageData {
     SimpleTANWCS wcs;                 // Simple TAN WCS instead of wcsprm
     QString filename;                 // Original filename
     QString solved_filename;          // Plate-solved FITS file
+    QString bayer_pattern;            // Bayer pattern (e.g. RGGB)
     double quality_score;             // Overall quality (0-1)
     double exposure_time;             // Exposure in seconds
     int star_count;                   // Number of detected stars
@@ -68,9 +69,10 @@ struct PixelContribution {
     float value;
     float weight;
     size_t source_image_index;
-    
-    PixelContribution(float v, float w, size_t idx) 
-        : value(v), weight(w), source_image_index(idx) {}
+    uint8_t colour;
+  
+PixelContribution(float v, float w, size_t idx, uint8_t c) 
+: value(v), weight(w), source_image_index(idx), colour(c) {}
 };
 
 class WCSAstrometricStacker : public QObject {
@@ -79,6 +81,7 @@ class WCSAstrometricStacker : public QObject {
 public:
     explicit WCSAstrometricStacker(QObject *parent = nullptr);
     ~WCSAstrometricStacker();
+    enum BayerColor { UNKNOWN, RED, GREEN1, GREEN2, BLUE };
     
     // Main interface
     bool addImage(const QString &fits_file, const QString &solved_fits_file = "");
@@ -102,7 +105,7 @@ public:
     QString getQualityReport() const;
     
     // Access results
-    cv::Mat getStackedImage() const { return m_stacked_image; }
+    cv::Mat getStackedImage() const { return m_stacked_image_green; }
     cv::Mat getWeightMap() const { return m_weight_map; }
     cv::Mat getOverlapMap() const { return m_overlap_map; }
     SimpleTANWCS getOutputWCS() const { return m_output_wcs; }
@@ -143,7 +146,7 @@ private:
     void updateProgress(int percentage, const QString &message);
     void logProcessing(const QString &message);
     void finishStacking();
-    
+    uint8_t getBayerColor(int x, int y, const QString& pattern);   
     // Member variables
     std::vector<std::unique_ptr<WCSImageData>> m_images;
     SimpleTANWCS m_output_wcs;        // Target WCS for output
@@ -153,7 +156,9 @@ private:
     std::vector<std::vector<PixelContribution>> m_pixel_lists;
     
     // Results
-    cv::Mat m_stacked_image;          // Final stacked result
+    cv::Mat m_stacked_image_red;      // Final stacked result
+    cv::Mat m_stacked_image_green;    // Final stacked result
+    cv::Mat m_stacked_image_blue;     // Final stacked result
     cv::Mat m_weight_map;             // Combined weight map
     cv::Mat m_overlap_map;            // Number of overlapping images per pixel
     cv::Mat m_noise_map;              // Noise estimate map

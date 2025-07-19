@@ -80,12 +80,17 @@ void WCSAstrometricStacker::imageAccumWCS(size_t i)
                                 float v0 = v00 * (1 - dx) + v01 * dx;
                                 float v1 = v10 * (1 - dx) + v11 * dx;
                                 float pixelValue = v0 * (1 - dy) + v1 * dy;
-                                
+
+				// Determine Bayer color for this pixel
+                                uint8_t bayer_color = getBayerColor(x, y, img->bayer_pattern);
+
+				
+				
                                 if (std::isfinite(pixelValue)) {
                                     // Add contribution to target pixel's list
                                     int targetIndex = y * m_output_size.width + x;
                                     m_pixel_lists[targetIndex].emplace_back(
-                                        pixelValue, imageWeight, i
+                                        pixelValue, imageWeight, i, bayer_color
                                     );
                                     
                                     pixelsProcessedThisImage++;
@@ -120,7 +125,9 @@ bool WCSAstrometricStacker::beginStackWCSImages() {
     }
     
     // Initialize output images
-    m_stacked_image = cv::Mat::zeros(m_output_size, CV_32F);
+    m_stacked_image_red = cv::Mat::zeros(m_output_size, CV_32F);
+    m_stacked_image_green = cv::Mat::zeros(m_output_size, CV_32F);
+    m_stacked_image_blue = cv::Mat::zeros(m_output_size, CV_32F);
     m_weight_map = cv::Mat::zeros(m_output_size, CV_32F);
     m_overlap_map = cv::Mat::zeros(m_output_size, CV_8U);
     
@@ -163,32 +170,41 @@ bool WCSAstrometricStacker::pixelAccumWCS(int y)
             
             if (!contributions.empty()) {
                 // Calculate final pixel value
-                float weightedSum = 0.0f;
-                float totalWeight = 0.0f;
-                
+                float redSum = 0.0f;
+                float blueSum = 0.0f;
+                float greenSum = 0.0f;
+
                 for (const auto& contrib : contributions) {
-                    weightedSum += contrib.value * contrib.weight;
-                    totalWeight += contrib.weight;
-                }
+                    switch(contrib.colour)
+                    {
+                        case RED:
+                            redSum += contrib.value;
+                            break;
+                        case GREEN1:
+                            greenSum += contrib.value;
+                            break;
+                        case GREEN2:
+                            greenSum += contrib.value;
+                            break;
+                        case BLUE:
+                            blueSum += contrib.value;
+                            break;
+                        default:
+                            break;
+                    }
+                 }
                 
-                if (totalWeight > 0.0f) {
+                if (contributions.size() > 0) {
                     // KEY INSIGHT: Divide by contribution count for brightness compensation
-                    float finalValue = weightedSum / totalWeight;
-                    
-                    // Apply brightness compensation: normalize by number of contributions
-                    // This ensures pixels with more overlapping images don't appear brighter
-                    finalValue = (finalValue * contributions.size()) / contributions.size();
-                    
-                    // Actually, the above line is redundant - the natural averaging already
-                    // handles brightness compensation correctly! The magic is that
-                    // weightedSum/totalWeight already gives us the correct brightness
-                    // regardless of how many images contributed.
-                    
-                    m_stacked_image.at<float>(y, x) = finalValue;
-                    m_weight_map.at<float>(y, x) = totalWeight;
+                    m_stacked_image_red.at<float>(y, x) = redSum / contributions.size();
+                    m_stacked_image_green.at<float>(y, x) = greenSum / contributions.size();
+                    m_stacked_image_blue.at<float>(y, x) = blueSum / contributions.size();
+                    m_weight_map.at<float>(y, x) = contributions.size();
                 } else {
                     // Should not happen, but handle gracefully
-                    m_stacked_image.at<float>(y, x) = 0.0f;
+                    m_stacked_image_red.at<float>(y, x) = 0.0f;
+                    m_stacked_image_green.at<float>(y, x) = 0.0f;
+                    m_stacked_image_blue.at<float>(y, x) = 0.0f;
                     m_weight_map.at<float>(y, x) = 0.0f;
                 }
             }
@@ -212,8 +228,8 @@ bool WCSAstrometricStacker::endStackWCSImages() {
     
     cv::Mat mask = (m_weight_map > 0);
     double minVal, maxVal;
-    cv::Scalar meanVal = cv::mean(m_stacked_image, mask);
-    cv::minMaxLoc(m_stacked_image, &minVal, &maxVal, nullptr, nullptr, mask);
+    cv::Scalar meanVal = cv::mean(m_stacked_image_green, mask);
+    cv::minMaxLoc(m_stacked_image_green, &minVal, &maxVal, nullptr, nullptr, mask);
     int validPixels = cv::countNonZero(mask);
     
     logProcessing(QString("List-based stacking complete:"));
@@ -291,7 +307,7 @@ void WCSAstrometricStacker::applyGlobalBrightnessNormalization() {
         for (int x = 0; x < m_output_size.width; ++x) {
             uchar overlap = m_overlap_map.at<uchar>(y, x);
             if (overlap > 0) {
-                meansByOverlap[overlap] += m_stacked_image.at<float>(y, x);
+                meansByOverlap[overlap] += m_stacked_image_green.at<float>(y, x);
                 countsByOverlap[overlap]++;
             }
         }
@@ -333,7 +349,9 @@ void WCSAstrometricStacker::applyGlobalBrightnessNormalization() {
                         // Only apply gentle corrections for significant differences
                         if (ratio < 0.9f || ratio > 1.1f) {
                             float correction = 1.0f + 0.1f * (ratio - 1.0f); // 10% of the difference
-                            m_stacked_image.at<float>(y, x) *= correction;
+                            m_stacked_image_red.at<float>(y, x) *= correction;
+                            m_stacked_image_green.at<float>(y, x) *= correction;
+                            m_stacked_image_blue.at<float>(y, x) *= correction;
                         }
                     }
                 }
@@ -490,7 +508,9 @@ WCSAstrometricStacker::WCSAstrometricStacker(QObject *parent)
     , m_processing_timer(new QTimer(this))
     , m_total_processing_time(0.0)
     , m_pixels_processed(0)
-    , m_stacked_image()
+    , m_stacked_image_red()
+    , m_stacked_image_green()
+    , m_stacked_image_blue()
     , m_pixels_rejected(0)
 {
     // No WCSLIB initialization needed
@@ -524,7 +544,11 @@ bool WCSAstrometricStacker::loadWCSFromFITS(const QString &fits_file, WCSImageDa
         return fits_read_key(fptr, TDOUBLE, keyword, &value, nullptr, &local_status) == 0;
     };
     
-    bool success = true;
+    char bayer[FLEN_VALUE];
+    memset(bayer, 0, sizeof(bayer));
+    bool success = !fits_read_key(fptr, TSTRING, "BAYERPAT", bayer, nullptr, &status);
+    img_data.bayer_pattern = QString(bayer);
+    
     success &= readKey("CRVAL1", img_data.wcs.crval1);
     success &= readKey("CRVAL2", img_data.wcs.crval2);
     success &= readKey("CRPIX1", img_data.wcs.crpix1);
@@ -762,7 +786,7 @@ bool WCSAstrometricStacker::computeOptimalWCS() {
 
 // Updated saveResult function
 bool WCSAstrometricStacker::saveResult(const QString &output_path) {
-    if (m_stacked_image.empty()) {
+    if (m_stacked_image_green.empty()) {
         return false;
     }
     
@@ -776,19 +800,19 @@ bool WCSAstrometricStacker::saveResult(const QString &output_path) {
         return false;
     }
     
-    long naxes[2] = {m_stacked_image.cols, m_stacked_image.rows};
+    long naxes[2] = {m_stacked_image_green.cols, m_stacked_image_green.rows};
     if (fits_create_img(fptr, FLOAT_IMG, 2, naxes, &status)) {
         fits_close_file(fptr, &status);
         return false;
     }
     
     // Convert OpenCV Mat to FITS format
-    long totalPixels = m_stacked_image.rows * m_stacked_image.cols;
+    long totalPixels = m_stacked_image_green.rows * m_stacked_image_green.cols;
     std::vector<float> pixels(totalPixels);
     
-    for (int y = 0; y < m_stacked_image.rows; ++y) {
-        for (int x = 0; x < m_stacked_image.cols; ++x) {
-            pixels[y * m_stacked_image.cols + x] = m_stacked_image.at<float>(y, x);
+    for (int y = 0; y < m_stacked_image_green.rows; ++y) {
+        for (int x = 0; x < m_stacked_image_green.cols; ++x) {
+            pixels[y * m_stacked_image_green.cols + x] = m_stacked_image_green.at<float>(y, x);
         }
     }
     
@@ -1081,7 +1105,7 @@ QString WCSAstrometricStacker::getQualityReport() const {
     report << "";
     report << QString("Total images processed: %1").arg(m_images.size());
     
-    if (!m_stacked_image.empty()) {
+    if (!m_stacked_image_green.empty()) {
         report << QString("Output dimensions: %1 x %2 pixels").arg(m_output_size.width).arg(m_output_size.height);
     }
     
@@ -1237,3 +1261,22 @@ void WCSAstrometricStacker::saveOverlapMap(const cv::Mat& overlap_count, const Q
         fits_close_file(fptr, &status);
     }
 }
+
+ // Utility function to determine Bayer color from pixel coordinates
+uint8_t WCSAstrometricStacker::getBayerColor(int x, int y, const QString& pattern) {
+    if (pattern == "RGGB") {
+        if (y % 2 == 0) {
+            return (x % 2 == 0) ? RED : GREEN1;  // R or G1
+        } else {
+            return (x % 2 == 0) ? GREEN2 : BLUE;  // G2 or B
+        }
+    } else if (pattern == "BGGR") {
+        if (y % 2 == 0) {
+            return (x % 2 == 0) ? BLUE : GREEN1;  // B or G1
+        } else {
+            return (x % 2 == 0) ? GREEN2 : RED;  // G2 or R
+        }
+    }
+    return UNKNOWN; // Default to Green
+}
+
