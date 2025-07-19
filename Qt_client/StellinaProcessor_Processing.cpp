@@ -152,7 +152,7 @@ bool StellinaProcessor::setupIntegrationStage() {
     m_currentStage = STAGE_INTEGRATION;
     m_currentIntegrationRow = 0;
     m_currentImageIndex = 0;
-    m_progressBar->setMaximum( m_wcsStacker->getOutputHeight() / 256);
+    m_progressBar->setMaximum( m_wcsStacker->getOutputHeight() );
     m_progressBar->setValue(0);
     updateProcessingStatus();
     return true;
@@ -281,7 +281,7 @@ bool StellinaProcessor::accumulateStacking() {
 // Simplified processNextImage that doesn't handle stage transitions
 void StellinaProcessor::processNextImage() {
     bool complete = m_currentStage == STAGE_INTEGRATION ? m_currentIntegrationRow >= m_wcsStacker->getOutputHeight() :
-        m_currentImageIndex >= m_imagesToProcess.length();
+    m_currentImageIndex >= m_imagesToProcess.length();
     
     if (complete) {
         // Current stage complete
@@ -290,7 +290,7 @@ void StellinaProcessor::processNextImage() {
             handlePipelineStageTransition();
         } else if (m_processingMode == MODE_ASTROMETRIC_STACKING && m_currentStage == STAGE_STACKING) {
             setupIntegrationStage();
-            } else {
+        } else {
             // Single stage complete
             finishProcessing();
         }
@@ -299,29 +299,62 @@ void StellinaProcessor::processNextImage() {
     
     if (m_currentStage != STAGE_INTEGRATION)
         logMessage(QString("Processing %1 of %2: %3")
-                  .arg(m_currentImageIndex)
-                  .arg(m_imagesToProcess.length())
-                  .arg(QFileInfo(m_imagesToProcess[m_currentImageIndex]).fileName()), "blue");
+                   .arg(m_currentImageIndex)
+                   .arg(m_imagesToProcess.length())
+                   .arg(QFileInfo(m_imagesToProcess[m_currentImageIndex]).fileName()), "blue");
     
     bool success = false;
+    qint64 elapsed;
+    double avgTimePerImage, avgTimePerChunk;
+    qint64 remaining;
     
     switch (m_currentStage) {
-    case STAGE_DARK_CALIBRATION:
-        success = processImageDarkCalibration();
-        break;
-    case STAGE_PLATE_SOLVING:
-        success = processImagePlatesolving();
-        break;
-    case STAGE_STACKING:
-        success = processImageStacking();
-        break;
-    case STAGE_INTEGRATION:
-        success = processImageIntegration();
-        break;
-    default:
-        logMessage(QString("Unknown processing stage: %1").arg(m_currentStage), "red");
-        success = false;
-        break;
+        case STAGE_DARK_CALIBRATION:
+            success = processImageDarkCalibration();
+            m_progressBar->setValue(++m_currentImageIndex);
+            // Update time estimate
+            elapsed = QDateTime::currentMSecsSinceEpoch() - m_processingStartTime;
+            avgTimePerImage = static_cast<double>(elapsed) / m_currentImageIndex;
+            remaining = static_cast<qint64>((m_imagesToProcess.length() - m_currentImageIndex) * avgTimePerImage);
+            m_timeEstimateLabel->setText(QString("Estimated time remaining: %1")
+                                            .arg(formatProcessingTime(remaining)));
+            break;
+        case STAGE_PLATE_SOLVING:
+            success = processImagePlatesolving();
+            m_progressBar->setValue(++m_currentImageIndex);
+            // Update time estimate
+            elapsed = QDateTime::currentMSecsSinceEpoch() - m_processingStartTime;
+            avgTimePerImage = static_cast<double>(elapsed) / m_currentImageIndex;
+            remaining = static_cast<qint64>((m_imagesToProcess.length() - m_currentImageIndex) * avgTimePerImage);
+            
+            m_timeEstimateLabel->setText(QString("Estimated time remaining: %1")
+                                            .arg(formatProcessingTime(remaining)));
+            break;
+        case STAGE_STACKING:
+            success = processImageStacking();
+            m_progressBar->setValue(++m_currentImageIndex);
+            // Update time estimate
+            elapsed = QDateTime::currentMSecsSinceEpoch() - m_processingStartTime;
+            avgTimePerImage = static_cast<double>(elapsed) / m_currentImageIndex;
+            remaining = static_cast<qint64>((m_imagesToProcess.length() - m_currentImageIndex) * avgTimePerImage);
+            
+            m_timeEstimateLabel->setText(QString("Estimated time remaining: %1")
+                                            .arg(formatProcessingTime(remaining)));
+            break;
+        case STAGE_INTEGRATION:
+            success = processImageIntegration();
+            m_progressBar->setValue(m_currentIntegrationRow);
+            // Update time estimate
+            elapsed = QDateTime::currentMSecsSinceEpoch() - m_processingStartTime;
+            avgTimePerChunk = static_cast<double>(elapsed) / m_currentIntegrationRow;
+            remaining = static_cast<qint64>((m_wcsStacker->getOutputHeight() - m_currentIntegrationRow) * avgTimePerChunk);
+            m_timeEstimateLabel->setText(QString("Estimated time remaining: %1")
+                                            .arg(formatProcessingTime(remaining)));
+            break;
+        default:
+            logMessage(QString("Unknown processing stage: %1").arg(m_currentStage), "red");
+            success = false;
+            break;
     }
     
     // Update counters
@@ -332,17 +365,8 @@ void StellinaProcessor::processNextImage() {
     }
     
     // Update progress
-    m_currentImageIndex++;
-    m_progressBar->setValue(m_currentImageIndex);
     updateProcessingStatus();
     
-    // Update time estimate
-    qint64 elapsed = QDateTime::currentMSecsSinceEpoch() - m_processingStartTime;
-    double avgTimePerImage = static_cast<double>(elapsed) / m_currentImageIndex;
-    qint64 remaining = static_cast<qint64>((m_imagesToProcess.length() - m_currentImageIndex) * avgTimePerImage);
-    
-    m_timeEstimateLabel->setText(QString("Estimated time remaining: %1")
-                                    .arg(formatProcessingTime(remaining)));
 }
 
 // Handle full pipeline stage transitions
@@ -526,35 +550,60 @@ void StellinaProcessor::updateProcessingStatus() {
     case STAGE_DARK_CALIBRATION:
         m_darkCalibrationStatusLabel->setText(QString("Dark Calibration: %1").arg(
             m_processing ? "In Progress" : "Ready"));
+        if (m_processing) {
+                m_progressLabel->setText(QString("Calibrating %1 of %2 images (Stage: %3) - Success: %4, Errors: %5")
+                                            .arg(m_currentImageIndex)
+                                            .arg(m_imagesToProcess.length())
+                                            .arg(stageText)
+                                            .arg(m_processedCount)
+                                            .arg(m_errorCount));
+            }
         break;
     case STAGE_PLATE_SOLVING:
         // Keep existing registration/stacking status as ready for now
+        if (m_processing) {
+                m_progressLabel->setText(QString("Solving %1 of %2 images (Stage: %3) - Success: %4, Errors: %5")
+                                            .arg(m_currentImageIndex)
+                                            .arg(m_imagesToProcess.length())
+                                            .arg(stageText)
+                                            .arg(m_processedCount)
+                                            .arg(m_errorCount));
+            }
         break;
     case STAGE_STACKING:
         m_stackingStatusLabel->setText("Stacking: In Progress");
+        if (m_processing) {
+                m_progressLabel->setText(QString("Stacking %1 of %2 images (Stage: %3) - Success: %4, Errors: %5")
+                                            .arg(m_currentImageIndex)
+                                            .arg(m_imagesToProcess.length())
+                                            .arg(stageText)
+                                            .arg(m_processedCount)
+                                            .arg(m_errorCount));
+            }
         break;
     case STAGE_INTEGRATION:
         m_registrationStatusLabel->setText("Integration: In Progress");
+        if (m_processing) {
+                m_progressLabel->setText(QString("Integrating %1 of %2 rows (Stage: %3) - Success: %4, Errors: %5")
+                                            .arg(m_currentIntegrationRow)
+                                            .arg(m_wcsStacker->getOutputHeight())
+                                            .arg(stageText)
+                                            .arg(m_processedCount)
+                                            .arg(m_errorCount));
+            }
+        else m_progressLabel->setText(QString("Integrated"));
         break;
     case STAGE_COMPLETE:
         m_darkCalibrationStatusLabel->setText("Dark Calibration: Complete");
         m_registrationStatusLabel->setText("Registration: Complete");
         m_stackingStatusLabel->setText("Stacking: Complete");
+        m_progressLabel->setText(QString("Complete"));
         break;
     }
     
-    if (m_processing) {
-        m_progressLabel->setText(QString("Processing %1 of %2 images (Stage: %3) - Success: %4, Errors: %5")
-                                    .arg(m_currentImageIndex + 1)
-                                    .arg(m_imagesToProcess.length())
-                                    .arg(stageText)
-                                    .arg(m_processedCount)
-                                    .arg(m_errorCount));
-        
-        if (m_darkCalibratedCount > 0) {
+    if (m_processing && m_darkCalibratedCount > 0) {
             m_darkCalibrationStatusLabel->setText(QString("Dark Calibration: %1 completed").arg(m_darkCalibratedCount));
         }
-    }
 }
 
 QString StellinaProcessor::getStageDescription() const {
@@ -618,14 +667,16 @@ void StellinaProcessor::finishProcessing() {
     }
     
     logMessage(completionMessage, "green");
-    
+    m_progressBar->setMaximum(1);
+    m_progressBar->setValue(1);
+
     // Save processing report
     saveProcessingReport();
     
     updateUI();
     
     // Show completion dialog
-    QMessageBox::information(this, "Processing Complete", completionMessage);
+    if (false) QMessageBox::information(this, "Processing Complete", completionMessage);
 }
 
 bool StellinaProcessor::checkSolveFieldInstalled() {

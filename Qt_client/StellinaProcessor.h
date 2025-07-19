@@ -545,10 +545,6 @@ private:
     QSpinBox *m_wcsOutputWidthSpin;
     QSpinBox *m_wcsOutputHeightSpin;
     QDoubleSpinBox *m_wcsOutputPixelScaleSpin;
-/*
-    QPushButton *m_startWCSStackingButton;
-    QPushButton *m_saveWCSResultButton;
-*/
     // Status bar
     QLabel *m_statusLabel;
     QLabel *m_memoryUsageLabel;

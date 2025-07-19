@@ -311,7 +311,7 @@ void StellinaProcessor::onWCSStackingComplete(bool success) {
             }
         }
         
-        QMessageBox::information(this, "Stacking Complete", 
+        if (false) QMessageBox::information(this, "Stacking Complete", 
                                 "WCS astrometric stacking completed successfully!\n\n" + stats);
     } else {
         logMessage("WCS astrometric stacking failed.", "red");
