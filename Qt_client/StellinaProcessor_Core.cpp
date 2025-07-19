@@ -39,7 +39,11 @@ StellinaProcessor::StellinaProcessor(QWidget *parent)
 {
     // Initialize UI
     setupUI();
-    
+    setupMenu();        // ← ADD THIS LINE
+    connectSignals();   // ← ADD THIS LINE
+    updateUI();         // ← ADD THIS LINE (also missing)
+    loadSettings();     // ← ADD THIS LINE (also missing)
+   
     // Initialize processing timer
     m_processingTimer = new QTimer(this);
     m_processingTimer->setSingleShot(true);
@@ -3316,3 +3320,60 @@ void StellinaProcessor::performDriftAnalysis(const QList<StackingCorrectionData>
         logMessage("Consider using plate solving calibration method instead", "orange");
     }
 }
+
+void StellinaProcessor::loadSettings() {
+    QSettings settings;
+    m_sourceDirectory = settings.value("sourceDirectory").toString();
+    m_darkDirectory = settings.value("darkDirectory").toString();
+    m_calibratedDirectory = settings.value("calibratedDirectory").toString();
+    m_plateSolvedDirectory = settings.value("plateSolvedDirectory").toString();
+    m_stackedDirectory = settings.value("stackedDirectory").toString();
+    m_qualityFilter = settings.value("qualityFilter", true).toBool();
+    m_focalLength = settings.value("focalLength", 400.0).toDouble();
+    m_pixelSize = settings.value("pixelSize", 2.40).toDouble();
+    m_observerLocation = settings.value("observerLocation", "London").toString();
+    m_processingMode = static_cast<ProcessingMode>(settings.value("processingMode", 0).toInt());
+    loadMountTiltFromSettings();
+    
+    // Update UI with loaded settings
+    m_sourceDirectoryEdit->setText(m_sourceDirectory);
+    m_darkDirectoryEdit->setText(m_darkDirectory);
+    m_calibratedDirectoryEdit->setText(m_calibratedDirectory);
+    m_plateSolvedDirectoryEdit->setText(m_plateSolvedDirectory);
+    m_stackedDirectoryEdit->setText(m_stackedDirectory);
+    m_qualityFilterCheck->setChecked(m_qualityFilter);
+    m_focalLengthSpin->setValue(m_focalLength);
+    m_pixelSizeSpin->setValue(m_pixelSize);
+    m_observerLocationEdit->setText(m_observerLocation);
+    m_processingModeCombo->setCurrentIndex(m_processingMode);
+    m_enableTiltCorrectionCheck->setChecked(m_mountTilt.enableCorrection);
+    m_northTiltSpin->setValue(m_mountTilt.northTilt);
+    m_eastTiltSpin->setValue(m_mountTilt.eastTilt);
+    updateTiltUI();
+    // loadWCSSettings();
+}
+
+bool StellinaProcessor::loadMountTiltFromSettings() {
+    QSettings settings;
+    
+    m_mountTilt.northTilt = settings.value("mountTilt/northTilt", 0.0).toDouble();
+    m_mountTilt.eastTilt = settings.value("mountTilt/eastTilt", 0.0).toDouble();
+    m_mountTilt.driftRA = settings.value("mountTilt/driftRA", 0.0).toDouble();
+    m_mountTilt.driftDec = settings.value("mountTilt/driftDec", 0.0).toDouble();
+    m_mountTilt.systematicRAOffset = settings.value("mountTilt/systematicRAOffset", 0.0).toDouble();
+    m_mountTilt.systematicDecOffset = settings.value("mountTilt/systematicDecOffset", 0.0).toDouble();
+    m_mountTilt.initialRAOffset = settings.value("mountTilt/initialRAOffset", 0.0).toDouble();
+    m_mountTilt.initialDecOffset = settings.value("mountTilt/initialDecOffset", 0.0).toDouble();
+    m_mountTilt.enableCorrection = settings.value("mountTilt/enableCorrection", false).toBool();
+    m_mountTilt.enableDriftCorrection = settings.value("mountTilt/enableDriftCorrection", false).toBool();
+    m_mountTilt.sessionStart = settings.value("mountTilt/sessionStart").toDateTime().toMSecsSinceEpoch();
+    
+    if (m_mountTilt.enableCorrection && m_mountTilt.enableDriftCorrection) {
+        logMessage(QString("Loaded mount drift correction: initial RA=%1°, drift=%2°/h")
+                      .arg(m_mountTilt.initialRAOffset, 0, 'f', 4)
+                      .arg(m_mountTilt.driftRA, 0, 'f', 3), "blue");
+    }
+    
+    return m_mountTilt.enableCorrection;
+}
+

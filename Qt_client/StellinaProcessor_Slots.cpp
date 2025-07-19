@@ -26,7 +26,7 @@ void StellinaProcessor::connectSignals() {
             this, &StellinaProcessor::onProcessingModeChanged);
     
     // Processing timer
-    connect(m_processingTimer, &QTimer::timeout,
+    if (false) connect(m_processingTimer, &QTimer::timeout,
             this, &StellinaProcessor::onProcessingTimer);
     
     // Settings updates
