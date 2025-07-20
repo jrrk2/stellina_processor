@@ -246,7 +246,7 @@ private slots:
     void analyzeMosaicCorrections(const QList<StackingCorrectionData> &stackingData,
                                   const QMap<QString, int> &patternCount);
     void onWCSParametersChanged();
-    void onStartWCSStacking();
+//    void onStartWCSStacking();
     void onWCSStackingComplete(bool success);
     void onWCSProgressUpdated(int percentage);
     void onWCSStatusUpdated(const QString &message);
@@ -293,6 +293,7 @@ private:
     void setupDarkTab();
     void setupStackingTab();
     void setupLogTab();
+    void setupMiscTab();
     void setupMenu();
     void connectSignals();
     void updateUI();
@@ -417,7 +418,7 @@ private:
     QStringList getAstrometryPaths();
     void initializeWCSStacker();
     void setupWCSStackingUI();
-    void addWCSMenuItems();
+//    void addWCSMenuItems();
     void updateWCSUI();
     void loadWCSSettings();
     void saveWCSSettings();
@@ -455,9 +456,9 @@ private:
     QWidget *m_darkTab;
     QWidget *m_stackingTab;
     QWidget *m_logTab;
-    
+    QWidget *m_miscTab;
+
     // Connection group
-//    QGroupBox *m_connectionGroup;
     QPushButton *m_testConnectionButton;
     QLabel *m_connectionStatus;
     

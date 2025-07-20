@@ -17,24 +17,91 @@ void StellinaProcessor::setupUI() {
     m_stackingTab = new QWidget;
     m_logTab = new QWidget;
     m_debugTab = new QWidget;  // ADD THIS LINE
-    
+    m_miscTab = new QWidget;  // ADD THIS LINE
+
     m_tabWidget->addTab(m_basicTab, "Basic Processing");
     m_tabWidget->addTab(m_darkTab, "Dark Calibration");
     m_tabWidget->addTab(m_stackingTab, "Astrometric Stacking");
     m_tabWidget->addTab(m_logTab, "Processing Log");
     m_tabWidget->addTab(m_debugTab, "Debug");
-    
+    m_tabWidget->addTab(m_miscTab, "Miscellaneous");
+
     setupBasicTab();
     setupDarkTab();
     setupStackingTab();
     setupLogTab();
     setupDebugTab();  // ADD THIS LINE
+    setupMiscTab();
     
     // Status bar with additional info
     m_statusLabel = new QLabel("Ready");
     m_memoryUsageLabel = new QLabel("Memory: 0 MB");
     statusBar()->addWidget(m_statusLabel);
     statusBar()->addPermanentWidget(m_memoryUsageLabel);
+}
+
+void StellinaProcessor::setupMiscTab() {
+    QVBoxLayout *layout = new QVBoxLayout(m_miscTab);
+    // Mount tilt correction group
+    m_mountTiltGroup = new QGroupBox("Mount Tilt Correction");
+    QGridLayout *tiltLayout = new QGridLayout(m_mountTiltGroup);
+
+    m_enableTiltCorrectionCheck = new QCheckBox("Enable mount tilt correction");
+    m_enableTiltCorrectionCheck->setChecked(false);
+    tiltLayout->addWidget(m_enableTiltCorrectionCheck, 0, 0, 1, 3);
+
+    tiltLayout->addWidget(new QLabel("North Tilt θ_N (°):"), 1, 0);
+    m_northTiltSpin = new QDoubleSpinBox;
+    m_northTiltSpin->setRange(-10.0, 10.0);
+    m_northTiltSpin->setValue(1.0832);  // Default from your analysis
+    m_northTiltSpin->setDecimals(4);
+    m_northTiltSpin->setSuffix("°");
+    tiltLayout->addWidget(m_northTiltSpin, 1, 1);
+
+    tiltLayout->addWidget(new QLabel("East Tilt θ_E (°):"), 2, 0);
+    m_eastTiltSpin = new QDoubleSpinBox;
+    m_eastTiltSpin->setRange(-10.0, 10.0);
+    m_eastTiltSpin->setValue(2.4314);   // Default from your analysis
+    m_eastTiltSpin->setDecimals(4);
+    m_eastTiltSpin->setSuffix("°");
+    tiltLayout->addWidget(m_eastTiltSpin, 2, 1);
+
+    QHBoxLayout *tiltButtonLayout = new QHBoxLayout;
+    m_calibrateTiltButton = new QPushButton("Calibrate Tilt");
+    m_testTiltButton = new QPushButton("Test Correction");
+    tiltButtonLayout->addWidget(m_calibrateTiltButton);
+    tiltButtonLayout->addWidget(m_testTiltButton);
+    tiltButtonLayout->addStretch();
+    tiltLayout->addLayout(tiltButtonLayout, 3, 0, 1, 3);
+
+    m_tiltStatusLabel = new QLabel("Tilt correction disabled");
+    m_tiltStatusLabel->setStyleSheet("color: gray; font-style: italic;");
+    tiltLayout->addWidget(m_tiltStatusLabel, 4, 0, 1, 3);
+
+    m_enableDriftCorrectionCheck = new QCheckBox("Enable drift correction");
+    m_enableDriftCorrectionCheck->setChecked(false);
+    tiltLayout->addWidget(m_enableDriftCorrectionCheck, 5, 0, 1, 3);
+
+    tiltLayout->addWidget(new QLabel("RA Drift (°/h):"), 6, 0);
+    m_driftRASpin = new QDoubleSpinBox;
+    m_driftRASpin->setRange(-10.0, 10.0);
+    m_driftRASpin->setValue(0.0);
+    m_driftRASpin->setDecimals(3);
+    m_driftRASpin->setSuffix("°/h");
+    tiltLayout->addWidget(m_driftRASpin, 6, 1);
+
+    tiltLayout->addWidget(new QLabel("Dec Drift (°/h):"), 7, 0);
+    m_driftDecSpin = new QDoubleSpinBox;
+    m_driftDecSpin->setRange(-10.0, 10.0);
+    m_driftDecSpin->setValue(0.0);
+    m_driftDecSpin->setDecimals(3);
+    m_driftDecSpin->setSuffix("°/h");
+    tiltLayout->addWidget(m_driftDecSpin, 7, 1);
+
+    m_driftStatusLabel = new QLabel("Drift correction disabled");
+    m_driftStatusLabel->setStyleSheet("color: gray; font-style: italic;");
+    tiltLayout->addWidget(m_driftStatusLabel, 8, 0, 1, 3);
+    layout->addWidget(m_mountTiltGroup);
 }
 
 void StellinaProcessor::setupBasicTab() {
@@ -133,66 +200,6 @@ void StellinaProcessor::setupBasicTab() {
     basicOptionsLayout->addWidget(new QLabel("Observer Location:"), 4, 0);
     m_observerLocationEdit = new QLineEdit("London");
     basicOptionsLayout->addWidget(m_observerLocationEdit, 4, 1);
-
-    // Mount tilt correction group
-    m_mountTiltGroup = new QGroupBox("Mount Tilt Correction");
-    QGridLayout *tiltLayout = new QGridLayout(m_mountTiltGroup);
-
-    m_enableTiltCorrectionCheck = new QCheckBox("Enable mount tilt correction");
-    m_enableTiltCorrectionCheck->setChecked(false);
-    tiltLayout->addWidget(m_enableTiltCorrectionCheck, 0, 0, 1, 3);
-
-    tiltLayout->addWidget(new QLabel("North Tilt θ_N (°):"), 1, 0);
-    m_northTiltSpin = new QDoubleSpinBox;
-    m_northTiltSpin->setRange(-10.0, 10.0);
-    m_northTiltSpin->setValue(1.0832);  // Default from your analysis
-    m_northTiltSpin->setDecimals(4);
-    m_northTiltSpin->setSuffix("°");
-    tiltLayout->addWidget(m_northTiltSpin, 1, 1);
-
-    tiltLayout->addWidget(new QLabel("East Tilt θ_E (°):"), 2, 0);
-    m_eastTiltSpin = new QDoubleSpinBox;
-    m_eastTiltSpin->setRange(-10.0, 10.0);
-    m_eastTiltSpin->setValue(2.4314);   // Default from your analysis
-    m_eastTiltSpin->setDecimals(4);
-    m_eastTiltSpin->setSuffix("°");
-    tiltLayout->addWidget(m_eastTiltSpin, 2, 1);
-
-    QHBoxLayout *tiltButtonLayout = new QHBoxLayout;
-    m_calibrateTiltButton = new QPushButton("Calibrate Tilt");
-    m_testTiltButton = new QPushButton("Test Correction");
-    tiltButtonLayout->addWidget(m_calibrateTiltButton);
-    tiltButtonLayout->addWidget(m_testTiltButton);
-    tiltButtonLayout->addStretch();
-    tiltLayout->addLayout(tiltButtonLayout, 3, 0, 1, 3);
-
-    m_tiltStatusLabel = new QLabel("Tilt correction disabled");
-    m_tiltStatusLabel->setStyleSheet("color: gray; font-style: italic;");
-    tiltLayout->addWidget(m_tiltStatusLabel, 4, 0, 1, 3);
-
-    m_enableDriftCorrectionCheck = new QCheckBox("Enable drift correction");
-    m_enableDriftCorrectionCheck->setChecked(false);
-    tiltLayout->addWidget(m_enableDriftCorrectionCheck, 5, 0, 1, 3);
-
-    tiltLayout->addWidget(new QLabel("RA Drift (°/h):"), 6, 0);
-    m_driftRASpin = new QDoubleSpinBox;
-    m_driftRASpin->setRange(-10.0, 10.0);
-    m_driftRASpin->setValue(0.0);
-    m_driftRASpin->setDecimals(3);
-    m_driftRASpin->setSuffix("°/h");
-    tiltLayout->addWidget(m_driftRASpin, 6, 1);
-
-    tiltLayout->addWidget(new QLabel("Dec Drift (°/h):"), 7, 0);
-    m_driftDecSpin = new QDoubleSpinBox;
-    m_driftDecSpin->setRange(-10.0, 10.0);
-    m_driftDecSpin->setValue(0.0);
-    m_driftDecSpin->setDecimals(3);
-    m_driftDecSpin->setSuffix("°/h");
-    tiltLayout->addWidget(m_driftDecSpin, 7, 1);
-
-    m_driftStatusLabel = new QLabel("Drift correction disabled");
-    m_driftStatusLabel->setStyleSheet("color: gray; font-style: italic;");
-    tiltLayout->addWidget(m_driftStatusLabel, 8, 0, 1, 3);
     
     // Processing group
     m_processingGroup = new QGroupBox("Processing Control");
@@ -235,11 +242,9 @@ void StellinaProcessor::setupBasicTab() {
     advancedLayout->addWidget(m_stackingStatusLabel, 0, 2);
     
     // Add all groups to main layout
-//    layout->addWidget(m_connectionGroup);
     layout->addWidget(m_modeGroup);
     layout->addWidget(m_inputGroup);
     layout->addWidget(m_basicOptionsGroup);
-    layout->addWidget(m_mountTiltGroup);
     layout->addWidget(m_processingGroup);
     layout->addWidget(m_advancedInfoGroup);
     layout->addStretch();
@@ -346,7 +351,7 @@ void StellinaProcessor::setupMenu() {
     // Tools menu
     QMenu *toolsMenu = menuBar->addMenu("&Tools");
     toolsMenu->addAction("&Refresh Dark Frames", this, &StellinaProcessor::onRefreshDarkFrames);
-    addWCSMenuItems();
+//    addWCSMenuItems();
     toolsMenu->addSeparator();
 
     // Enhanced Mount tilt submenu

@@ -195,6 +195,7 @@ void StellinaProcessor::onWCSParametersChanged() {
     }
 }
 
+/*
 void StellinaProcessor::onStartWCSStacking() {
     if (m_plateSolvedDirectory.isEmpty()) {
         QMessageBox::warning(this, "Directory Error", 
@@ -260,7 +261,6 @@ void StellinaProcessor::onStartWCSStacking() {
     }
     
     logMessage(QString("Successfully loaded %1 images for WCS stacking").arg(successfullyLoaded), "green");
-/*
     // Update UI state
     m_startWCSStackingButton->setEnabled(false);
     m_startWCSStackingButton->setText("Stacking...");
@@ -268,12 +268,12 @@ void StellinaProcessor::onStartWCSStacking() {
 
     // Start the stacking process
     m_wcsStacker->startStacking();
- */
     QMessageBox::critical(this, "Loading Error",
                          QString("Not implemented"));
     return;
 
 }
+ */
 
 void StellinaProcessor::onWCSStackingComplete(bool success) {
     // Restore UI state
@@ -382,21 +382,22 @@ void StellinaProcessor::onSaveWCSResult() {
             logMessage(QString("Quality report saved to: %1").arg(reportPath), "blue");
         }
         
-        QMessageBox::information(this, "Save Complete", 
+        if (false) QMessageBox::information(this, "Save Complete",
                                 QString("WCS stacked image saved successfully to:\n%1\n\n"
                                        "Quality report saved to:\n%2").arg(outputPath).arg(reportPath));
     } else {
         logMessage("Failed to save WCS stacked image.", "red");
-        QMessageBox::critical(this, "Save Failed", "Failed to save the WCS stacked image.");
+        if (false) QMessageBox::critical(this, "Save Failed", "Failed to save the WCS stacked image.");
     }
 }
 
+/*
 void StellinaProcessor::addWCSMenuItems() {
     // This should be called from your setupMenu() function
     QMenu *wcsMenu = menuBar()->addMenu("WCS &Stacking");
     
-    wcsMenu->addAction("&Start WCS Stacking", this, &StellinaProcessor::onStartWCSStacking);
-    wcsMenu->addAction("&Save WCS Result", this, &StellinaProcessor::onSaveWCSResult);
+//    wcsMenu->addAction("&Start WCS Stacking", this, &StellinaProcessor::onStartWCSStacking);
+//    wcsMenu->addAction("&Save WCS Result", this, &StellinaProcessor::onSaveWCSResult);
     wcsMenu->addSeparator();
     wcsMenu->addAction("&Test WCS Loading", [this]() {
         QString testFile = QFileDialog::getOpenFileName(this, "Select Plate-Solved FITS", 
@@ -440,6 +441,7 @@ void StellinaProcessor::addWCSMenuItems() {
         }
     });
 }
+*/
 
 void StellinaProcessor::updateWCSUI() {
     bool hasPlatesolved = !m_plateSolvedDirectory.isEmpty() && 
