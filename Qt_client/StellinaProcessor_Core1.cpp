@@ -52,6 +52,8 @@ StellinaProcessor::StellinaProcessor(QWidget *parent)
     , m_calibrateTiltButton(nullptr)
     , m_testTiltButton(nullptr)
     , m_tiltStatusLabel(nullptr)
+    , m_stretchedViewer(nullptr)
+
 {
     setWindowTitle("Enhanced Stellina Processor");
     setMinimumSize(1000, 800);
@@ -77,6 +79,135 @@ StellinaProcessor::StellinaProcessor(QWidget *parent)
 
 StellinaProcessor::~StellinaProcessor() {
     saveSettings();
+    if (m_stretchedViewer) {
+        delete m_stretchedViewer;
+    }
+}
+
+void StellinaProcessor::onShowStretchedViewer()
+{
+    if (!m_stretchedViewer) {
+        m_stretchedViewer = new StretchedImageViewer(this);
+    }
+    
+    m_stretchedViewer->showViewer();
+}
+
+void StellinaProcessor::onLoadImageInViewer()
+{
+    // Get the path to your current stacked image
+    QString stackedImagePath = getCurrentStackedImagePath(); // You'll need to implement this
+    
+    if (stackedImagePath.isEmpty()) {
+        QMessageBox::information(this, "No Stacked Image", 
+            "No stacked image is currently available. Please complete stacking first.");
+        return;
+    }
+    
+    if (!m_stretchedViewer) {
+        m_stretchedViewer = new StretchedImageViewer(this);
+    }
+    
+    m_stretchedViewer->loadStackedImage(stackedImagePath);
+    m_stretchedViewer->showViewer();
+}
+
+// Helper method to get current stacked image path
+QString StellinaProcessor::getCurrentStackedImagePath()
+{
+    // Based on your project structure, this might be:
+    // 1. The output from your stacking directory
+    // 2. A member variable tracking the last stacked image
+    // 3. The most recent file in your stacked directory
+    
+    // Example implementation:
+    if (!m_stackedDirectory.isEmpty()) {
+        QDir stackedDir(m_stackedDirectory);
+        QStringList filters;
+        filters << "*.fits" << "*.fit" << "*.fts";
+        QFileInfoList files = stackedDir.entryInfoList(filters, QDir::Files, QDir::Time);
+        
+        if (!files.isEmpty()) {
+            return files.first().absoluteFilePath(); // Most recent file
+        }
+    }
+    
+    return QString();
+}
+
+// Update this method when stacking completes
+void StellinaProcessor::onStackingCompleted()
+{
+    // ... existing stacking completion code ...
+    
+    // Enable the load in viewer action
+    if (m_loadInViewerAction) {
+        m_loadInViewerAction->setEnabled(true);
+    }
+    
+    // Optional: Auto-load the stacked image in viewer
+    if (m_autoShowViewerAfterStacking) { // Add this as a preference
+        onLoadImageInViewer();
+    }
+}
+
+// Alternative: Add a toolbar button
+void StellinaProcessor::addViewerToolbarButton()
+{
+    /*
+    // If you have a toolbar, add a button there too
+    if (m_mainToolBar) { // Assuming you have a toolbar
+        m_mainToolBar->addSeparator();
+        
+        QAction *viewerAction = m_mainToolBar->addAction("📊"); // Or use an icon
+        viewerAction->setText("Stretched Viewer");
+        viewerAction->setToolTip("Open Stretched Image Viewer");
+        connect(viewerAction, &QAction::triggered, this, &StellinaProcessor::onShowStretchedViewer);
+    }
+     */
+}
+
+// Optional: Add context menu support
+void StellinaProcessor::setupImageContextMenu()
+{
+    // If you have image displays that support context menus
+    // Add "View in Stretched Viewer" option
+ /*
+    if (m_imageContextMenu) { // Assuming you have context menus
+        m_imageContextMenu->addSeparator();
+        QAction *viewInStretchedAction = m_imageContextMenu->addAction("View in Stretched Viewer");
+        connect(viewInStretchedAction, &QAction::triggered, [this]() {
+            QString imagePath = getCurrentSelectedImagePath(); // Implement based on your UI
+            if (!imagePath.isEmpty()) {
+                if (!m_stretchedViewer) {
+                    m_stretchedViewer = new StretchedImageViewer(this);
+                }
+                m_stretchedViewer->loadStackedImage(imagePath);
+                m_stretchedViewer->showViewer();
+            }
+        });
+    }
+  */
+}
+
+// =============================================================================
+// Add to StellinaProcessor_Core1.cpp (or wherever your StellinaProcessor methods are)
+// =============================================================================
+
+void StellinaProcessor::onLoadSpecificImageInViewer(const QString &imagePath)
+{
+    if (imagePath.isEmpty() || !QFile::exists(imagePath)) {
+        QMessageBox::warning(this, "File Not Found", 
+            "The specified image file could not be found: " + imagePath);
+        return;
+    }
+    
+    if (!m_stretchedViewer) {
+        m_stretchedViewer = new StretchedImageViewer(this);
+    }
+    
+    m_stretchedViewer->loadStackedImage(imagePath);
+    m_stretchedViewer->showViewer();
 }
 
 // Add these helper functions to StellinaProcessor_Core.cpp

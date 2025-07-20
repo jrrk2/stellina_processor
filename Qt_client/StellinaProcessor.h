@@ -28,6 +28,7 @@
 #include <QElapsedTimer>
 #include <QProcessEnvironment>
 #include <fitsio.h>
+#include "StretchedImageViewer.h"
 
 //============================================================================
 // 2. ADD THESE FORWARD DECLARATIONS (if not already present)
@@ -218,6 +219,9 @@ public:
     void validateAcqTimePreservation() ;
 				       
 private slots:
+    void onShowStretchedViewer();
+    void onLoadImageInViewer();
+
     // Debug slot functions
     void onTestConversion();
     void onTestRevConversion();
@@ -246,12 +250,12 @@ private slots:
     void analyzeMosaicCorrections(const QList<StackingCorrectionData> &stackingData,
                                   const QMap<QString, int> &patternCount);
     void onWCSParametersChanged();
-//    void onStartWCSStacking();
     void onWCSStackingComplete(bool success);
     void onWCSProgressUpdated(int percentage);
     void onWCSStatusUpdated(const QString &message);
     void onSaveWCSResult();
-  
+    void onLoadSpecificImageInViewer(const QString &imagePath);
+ 
 private:
     // Session timing state
     static QDateTime s_sessionReferenceTime;
@@ -549,7 +553,12 @@ private:
     // Status bar
     QLabel *m_statusLabel;
     QLabel *m_memoryUsageLabel;
-    
+
+    StretchedImageViewer *m_stretchedViewer;
+    QAction *m_showViewerAction;
+    QAction *m_loadInViewerAction;
+    bool m_autoShowViewerAfterStacking;         ///< Whether to auto-show viewer after stacking
+   
     // Core components
     QTimer *m_processingTimer;
     
@@ -621,6 +630,40 @@ private:
     bool updateProcessingStage(const QString &fitsPath, const QString &stage);
     bool cleanExistingStellinaKeywords(const QString &fitsPath);
     StellinaImageData* findImageDataByPath(const QString &path);
-};
+    
+    /**
+     * @brief Get the path to the current stacked image
+     * @return Path to the most recent stacked image, or empty string if none
+     */
+    QString getCurrentStackedImagePath() const;
+    
+    /**
+     * @brief Get the path to the currently selected image (if any)
+     * @return Path to selected image, or empty string if none
+     */
+    QString getCurrentSelectedImagePath() const;
+    
+    /**
+     * @brief Add viewer button to toolbar (optional)
+     */
+    void addViewerToolbarButton();
+    
+    /**
+     * @brief Set up context menu support for images (optional)
+     */
+    void setupImageContextMenu();
+    
+    /**
+     * @brief Enable/disable viewer menu items based on availability
+     * @param hasStackedImage Whether a stacked image is available
+     */
+    void updateViewerMenuState(bool hasStackedImage);
+    
+    /**
+     * @brief Called when stacking is completed - enables viewer options
+     */
+    void onStackingCompleted(); // Modify existing or add new
+    QString getCurrentStackedImagePath();
+  };
 
 #endif // STELLINAPROCESSOR_H

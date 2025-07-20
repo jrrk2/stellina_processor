@@ -353,6 +353,21 @@ void StellinaProcessor::setupMenu() {
     toolsMenu->addAction("&Refresh Dark Frames", this, &StellinaProcessor::onRefreshDarkFrames);
 //    addWCSMenuItems();
     toolsMenu->addSeparator();
+    // Add separator before our new items
+    toolsMenu->addSeparator();
+    
+    // Add "Show Stretched Image Viewer" action
+    m_showViewerAction = toolsMenu->addAction("Show Stretched Image Viewer");
+    m_showViewerAction->setShortcut(QKeySequence("Ctrl+Shift+V"));
+    m_showViewerAction->setStatusTip("Open the stretched image viewer window");
+    connect(m_showViewerAction, &QAction::triggered, this, &StellinaProcessor::onShowStretchedViewer);
+    
+    // Add "Load Current Stacked Image" action
+    m_loadInViewerAction = toolsMenu->addAction("Load Current Stacked Image in Viewer");
+    m_loadInViewerAction->setShortcut(QKeySequence("Ctrl+Shift+L"));
+    m_loadInViewerAction->setStatusTip("Load the current stacked image in the stretched viewer");
+    m_loadInViewerAction->setEnabled(false); // Enable when stack is available
+    connect(m_loadInViewerAction, &QAction::triggered, this, &StellinaProcessor::onLoadImageInViewer);
 
     // Enhanced Mount tilt submenu
     QMenu *tiltMenu = toolsMenu->addMenu("Mount &Tilt");

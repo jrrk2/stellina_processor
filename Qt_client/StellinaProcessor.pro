@@ -56,12 +56,14 @@ SOURCES += \
     StellinaProcessor_UI.cpp \
     StellinaProcessor_Utils.cpp \
     StellinaProcessor_WCS_Integration.cpp \
+    StretchedImageViewer.cpp \
     WcsAstrometricStacker.cpp \
     CoordinateUtils.cpp \
     
 # Header files
 HEADERS += \
     StellinaProcessor.h \
+    StretchedImageViewer.h \
     WcsAstrometricStacker.h \
 
 # Resources (if you add icons, etc.)
