@@ -35,6 +35,7 @@
 //============================================================================
 
 class WCSAstrometricStacker;
+class StellarSolverManager;
 
 // Processing modes
 enum ProcessingMode {
@@ -114,7 +115,7 @@ struct StellinaImageData {
     bool isReversedImage;         // True if this is a reversed stellina image (img-0001r.fits)
     QString bayerPattern;         // Detected bayer pattern (e.g., "RGGB", "GRBG", "GBRG", "BGGR")
     QString baseName;             // Base name without 'r' suffix (e.g., "img-0001")
-    
+    bool hasValidWCS;    
     StellinaImageData() : altitude(0), azimuth(0), hasValidCoordinates(false), 
                          exposureSeconds(0), temperatureKelvin(284), binning("1x1"),
 			  calculatedRA(0), calculatedDec(0), hasCalculatedCoords(false), isReversedImage(false), bayerPattern("RGGB")  {}
@@ -160,6 +161,19 @@ struct ProcessedImageData {
     QDateTime obsTime;
     double minutesFromStart;
     bool isValid;
+    // ADDED: Missing members that were causing compilation errors
+    double pixelScale;     // Pixel scale in arcsec/pixel
+    bool hasValidWCS;      // Whether WCS data is valid
+    double correctionX;
+    double correctionY;
+    double correctionRot;
+    int starsUsed;
+    double distanceToCenter;
+    
+    ProcessedImageData() : stellinaAlt(0), stellinaAz(0), predictedRA(0), predictedDec(0),
+                          solvedRA(0), solvedDec(0), correctionX(0), correctionY(0), 
+                          correctionRot(0), starsUsed(0), distanceToCenter(0), 
+                          isValid(false), pixelScale(0), hasValidWCS(false) {}
 };
 
 
@@ -184,12 +198,13 @@ class StellinaProcessor : public QMainWindow {
 public:
     explicit StellinaProcessor(QWidget *parent = nullptr);
     ~StellinaProcessor();
+    bool convertStellinaToEquatorial(const StellinaImageData &stellinaData, double &ra, double &dec);
+    void onStellarSolverImageSolved(const QString& filename, double ra, double dec, double pixelScale);
     void diagnoseSiderealTimeIssues();
     void testFixedCoordinateConversion();
     void diagnoseStellinaProcessing();
     void verifyCorrectProcessing(); 
     void analyzeRealCoordinateErrors();
-    bool processImagePlatesolving_Fixed(const QString &calibratedFitsPath);
     void diagnoseTrackingIssue();
     void debugCoordinateSystem();				
     void testStellinaAzimuthConvention();
@@ -255,7 +270,12 @@ private slots:
     void onWCSStatusUpdated(const QString &message);
     void onSaveWCSResult();
     void onLoadSpecificImageInViewer(const QString &imagePath);
- 
+    void onStellarSolverProgress(int current, int total, const QString& status);
+    void onStellarSolverError(const QString& error);
+    void onStellarSolverBatchComplete();
+    void onStellarSolverImageSkipped(const QString& filename, const QString& reason);
+    void onStellarSolverImageProcessed(const QString& filename, bool success, double ra, double dec, double pixelScale);
+
 private:
     // Session timing state
     static QDateTime s_sessionReferenceTime;
@@ -664,6 +684,17 @@ private:
      */
     void onStackingCompleted(); // Modify existing or add new
     QString getCurrentStackedImagePath();
+    bool calculateImageCoordinates(StellinaImageData &imageData);
+    bool processImagePlatesolving(const QString &currentFile);
+    bool finalizePlatesolvingStage();
+    bool validateSolveFieldResult(const QString &solvedPath);
+    QString generatePlateSolvedPath(const QString &inputPath);
+    bool estimateFieldOfView(const QString &fitsPath, double &fovWidth, double &fovHeight);
+    QStringList getSupportedSolveFieldOptions();
+    void initializeStellarSolver();
+    
+    StellarSolverManager* m_stellarSolverManager;
+    bool m_useStellarSolver; // Flag to choose between solve-field and StellarSolver
   };
 
 #endif // STELLINAPROCESSOR_H

@@ -54,6 +54,7 @@ SOURCES += \
     StellinaProcessor_Slots.cpp \
     StellinaProcessor_Misc.cpp \
     StellinaProcessor_UI.cpp \
+    StellinaProcessor_PlateSolving.cpp \
     StellinaProcessor_Utils.cpp \
     StellinaProcessor_WCS_Integration.cpp \
     StretchedImageViewer.cpp \
@@ -65,7 +66,8 @@ HEADERS += \
     StellinaProcessor.h \
     StretchedImageViewer.h \
     WcsAstrometricStacker.h \
-
+    StellarSolverManager.h \
+    
 # Resources (if you add icons, etc.)
 # RESOURCES += resources.qrc
 
@@ -85,20 +87,24 @@ CONFIG(debug, debug|release) {
 CONFIG += warn_on
 
 # Additional libraries (if needed)
-LIBS += -lm -lcfitsio -lwcs -lopencv_core -lopencv_imgproc -lopencv_imgcodecs -lopencv_features2d
+LIBS += -lm -lcfitsio -lwcs -lopencv_core -lopencv_imgproc -lopencv_imgcodecs -lopencv_features2d -lnova -lstellarsolver6
 
 # Deployment settings for macOS
 macx {
     # Create app bundle with frameworks
     CONFIG += app_bundle
-    
+
+    QMAKE_RPATHDIR += /opt/homebrew/lib
+    QMAKE_RPATHDIR += /usr/local/lib  
+
     # For distribution
     # QMAKE_POST_LINK += macdeployqt $$OUT_PWD/$${TARGET}.app
     INCLUDEPATH += /opt/homebrew/include
     INCLUDEPATH += /opt/homebrew/include/opencv4
     INCLUDEPATH += /opt/homebrew/include/wcslib
     INCLUDEPATH += /opt/homebrew/Cellar/opencv/4.11.0_1/include/opencv4
-    LIBS += -L/opt/homebrew/lib -lnova
+    INCLUDEPATH += /usr/local/include/libstellarsolver
+    LIBS += -L/opt/homebrew/lib -L/usr/local/lib 
     }
 
 # Build output directories

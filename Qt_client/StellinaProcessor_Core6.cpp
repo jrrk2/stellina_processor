@@ -24,6 +24,7 @@
 #include <limits>
 #include <algorithm>  // for std::fmod if needed
 
+/*
 // Helper function to read solve-field results from WCS headers
 bool StellinaProcessor::readSolveFieldResults(const QString &fitsPath, ProcessedImageData &data) {
     fitsfile *fptr = nullptr;
@@ -71,6 +72,8 @@ bool StellinaProcessor::readSolveFieldResults(const QString &fitsPath, Processed
     fits_close_file(fptr, &status);
     return false;
 }
+*/
+
 // Update the analyzeAndCalibrateFromData function to use linear regression
 // Replace the existing function in StellinaProcessor_Core.cpp
 

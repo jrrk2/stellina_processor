@@ -1,4 +1,5 @@
 #include "StellinaProcessor.h"
+#include "StellarSolverManager.h"
 #include "WcsAstrometricStacker.h"
 #include <QApplication>
 #include <QDir>
@@ -92,59 +93,6 @@ bool StellinaProcessor::setupDarkCalibrationStage() {
                       .arg(m_darkFrames.size()), "blue");
     }
     
-    return true;
-}
-
-bool StellinaProcessor::setupPlatesolvingStage() {
-    m_currentStage = STAGE_PLATE_SOLVING;
-    
-    // Plate solving uses dark-calibrated images if available, otherwise fail
-    QDir calibratedDir(m_calibratedDirectory);
-    if (m_calibratedDirectory.isEmpty() || !calibratedDir.exists()) {
-        logMessage("Plate solving requires calibrated images directory to be set", "red");
-        return false;
-    }
-    
-    QStringList calibratedFiles = calibratedDir.entryList(
-        QStringList() << "dark_calibrated_*.fits" << "*calibrated*.fits", 
-        QDir::Files);
-    
-    if (calibratedFiles.isEmpty()) {
-        logMessage("No calibrated images found for plate solving", "red");
-        logMessage("Run dark calibration first or select a directory with calibrated images", "red");
-        return false;
-    }
-    
-    // Build full paths and validate each file has coordinates
-    m_imagesToProcess.clear();
-    int validFiles = 0;
-    
-    for (const QString &fileName : calibratedFiles) {
-        QString fullPath = calibratedDir.absoluteFilePath(fileName);
-        
-        // Check if this calibrated file has Stellina coordinates
-        StellinaImageData imageData;
-        if (readStellinaMetadataFromFits(fullPath, imageData)) {
-            if (imageData.hasValidCoordinates) {
-                m_imagesToProcess.append(fullPath);
-                validFiles++;
-            } else {
-                logMessage(QString("Skipping %1: no coordinates").arg(fileName), "orange");
-            }
-        } else {
-            logMessage(QString("Skipping %1: no Stellina metadata").arg(fileName), "orange");
-        }
-    }
-    
-    if (validFiles == 0) {
-        logMessage("No valid calibrated images with coordinates found", "red");
-        return false;
-    }
-    
-    logMessage(QString("Plate solving stage: found %1 calibrated images to process")
-                  .arg(validFiles), "blue");
-
-    m_currentImageIndex = 0;
     return true;
 }
 
@@ -413,74 +361,21 @@ void StellinaProcessor::handlePipelineStageTransition() {
     }
 }
 
-// Simplified plate solving that only works with calibrated files
+// Replace your solve-field processing with:
 bool StellinaProcessor::processImagePlatesolving() {
-    m_currentTaskLabel->setText("Plate solving...");
     const QString &calibratedFitsPath = m_imagesToProcess[m_currentImageIndex];
     
-    // This function now ONLY processes calibrated files
-    if (!calibratedFitsPath.contains("calibrated") && !calibratedFitsPath.contains(m_calibratedDirectory)) {
-        logMessage(QString("ERROR: Plate solving received non-calibrated file: %1").arg(QFileInfo(calibratedFitsPath).fileName()), "red");
-        return false;
-    }
-    
-    // Read Stellina metadata from calibrated FITS file
-    StellinaImageData imageData;
-    if (!readStellinaMetadataFromFits(calibratedFitsPath, imageData)) {
-        logMessage(QString("No Stellina metadata in calibrated file: %1").arg(QFileInfo(calibratedFitsPath).fileName()), "red");
-        return false;
-    }
-    
-    if (!imageData.hasValidCoordinates) {
-        logMessage("No valid coordinates in calibrated file metadata", "red");
-        return false;
-    }
-    
-    // Use pre-calculated coordinates from calibrated file
-    double ra, dec;
-    if (imageData.hasPreCalculatedCoords()) {
-        ra = imageData.calculatedRA;
-        dec = imageData.calculatedDec;
-        logMessage(QString("Using coordinates from calibrated file: RA=%1°, Dec=%2°")
-                      .arg(ra, 0, 'f', 4).arg(dec, 0, 'f', 4), "blue");
-    } else {
-        logMessage("ERROR: Calibrated file missing pre-calculated coordinates", "red");
-        return false;
-    }
-    
-    // Create output file name
-    QString baseName = QFileInfo(calibratedFitsPath).baseName();
-    if (baseName.startsWith("dark_calibrated_")) {
-        baseName = baseName.mid(16); // Remove "dark_calibrated_" prefix
-    }
-    QString outputName = QString("plate_solved_%1.fits").arg(baseName);
-    QString outputPath = QDir(m_plateSolvedDirectory).absoluteFilePath(outputName);
-    
-    // Choose image for plate solving (prefer binned if available)
-    QString plateSolvingImage = calibratedFitsPath;
-    
-    // Perform plate solving
-    logMessage(QString("Plate solving with solve-field: RA=%1°, Dec=%2°").arg(ra, 0, 'f', 4).arg(dec, 0, 'f', 4), "blue");
-    
-    if (!runSolveField(plateSolvingImage, outputPath, ra, dec)) {
-        logMessage("Plate solving failed", "red");
-        return false;
-    }
-    
-    logMessage("Plate solving succeeded!", "green");
-    
-    // Write metadata to plate-solved file
-    StellinaImageData plateSolvedImageData = imageData;
-    plateSolvedImageData.currentFitsPath = outputPath;
-    
-    if (!writeStellinaMetadataWithCoordinates(outputPath, plateSolvedImageData)) {
-        logMessage("Warning: Failed to write metadata to plate-solved file", "orange");
-    } else {
-        updateProcessingStage(outputPath, "PLATE_SOLVED");
-    }
-    
-    m_plateSolvedFiles.append(outputPath);
-    return true;
+    // Use StellarSolver instead of solve-field
+    if (m_currentImageIndex == 0) {
+            // Initialize batch on first image
+            if (!m_stellarSolverManager->initializeBatch(m_imagesToProcess)) {
+                return false;
+            }
+        }
+        
+    // Start processing current image
+    m_stellarSolverManager->processNextImage();
+    return true; // Return immediately, completion handled by signals
 }
 
 bool StellinaProcessor::validateProcessingInputs() {

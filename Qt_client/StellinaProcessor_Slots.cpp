@@ -339,3 +339,50 @@ void StellinaProcessor::updateTiltUI() {
         }
     }
 }
+
+void StellinaProcessor::onStellarSolverProgress(int current, int total, const QString& status) {
+    m_progressBar->setMaximum(total);
+    m_progressBar->setValue(current);
+    m_currentTaskLabel->setText(status);
+    QApplication::processEvents(); // Keep UI responsive
+}
+
+void StellinaProcessor::onStellarSolverImageProcessed(const QString& filename, bool success, 
+                                                     double ra, double dec, double pixelScale) {
+    if (success) {
+        m_processedCount++;
+        // Store results, update your ProcessedImageData structure
+        // ... your existing success handling
+    } else {
+        m_errorCount++;
+        // ... your existing error handling
+    }
+    
+    // Move to next image automatically
+    m_currentImageIndex++;
+    updateProcessingStatus();
+    
+    // Continue processing or finish
+    if (m_currentImageIndex < m_imagesToProcess.length()) {
+        QTimer::singleShot(10, this, &StellinaProcessor::processNextImage);
+    } else {
+        finishProcessing();
+    }
+}
+
+/*
+void StellinaProcessor::onStellarSolverImageSkipped(const QString& filename, const QString& reason) {
+    m_skippedCount++;
+    logMessage(QString("Skipped %1: %2").arg(QFileInfo(filename).baseName()).arg(reason), "orange");
+}
+
+void StellinaProcessor::onStellarSolverBatchComplete() {
+    logMessage("StellarSolver batch processing complete", "green");
+    finishProcessing();
+}
+
+void StellinaProcessor::onStellarSolverError(const QString& error) {
+    logMessage(QString("StellarSolver error: %1").arg(error), "red");
+    finishProcessing();
+}
+*/
