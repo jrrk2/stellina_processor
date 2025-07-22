@@ -369,20 +369,3 @@ void StellinaProcessor::onStellarSolverImageProcessed(const QString& filename, b
         finishProcessing();
     }
 }
-
-/*
-void StellinaProcessor::onStellarSolverImageSkipped(const QString& filename, const QString& reason) {
-    m_skippedCount++;
-    logMessage(QString("Skipped %1: %2").arg(QFileInfo(filename).baseName()).arg(reason), "orange");
-}
-
-void StellinaProcessor::onStellarSolverBatchComplete() {
-    logMessage("StellarSolver batch processing complete", "green");
-    finishProcessing();
-}
-
-void StellinaProcessor::onStellarSolverError(const QString& error) {
-    logMessage(QString("StellarSolver error: %1").arg(error), "red");
-    finishProcessing();
-}
-*/

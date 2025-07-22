@@ -53,7 +53,7 @@ StellinaProcessor::StellinaProcessor(QWidget *parent)
     , m_testTiltButton(nullptr)
     , m_tiltStatusLabel(nullptr)
     , m_stretchedViewer(nullptr)
-
+    , m_stellarSolverManager(nullptr)
 {
     setWindowTitle("Enhanced Stellina Processor");
     setMinimumSize(1000, 800);
@@ -68,6 +68,7 @@ StellinaProcessor::StellinaProcessor(QWidget *parent)
     loadSettings();
     testLibnovaConversion();
     initializeWCSStacker();
+    initializeStellarSolver();
 
     logMessage("Enhanced Stellina Processor started.", "blue");
     
@@ -82,6 +83,70 @@ StellinaProcessor::~StellinaProcessor() {
     if (m_stretchedViewer) {
         delete m_stretchedViewer;
     }
+}
+
+void StellinaProcessor::initializeStellarSolver() {
+    qDebug() << "Initializing StellarSolverManager...";
+    
+    // Clean up existing manager if any
+    if (m_stellarSolverManager) {
+        delete m_stellarSolverManager;
+        m_stellarSolverManager = nullptr;
+    }
+    
+    // Create new manager
+    m_stellarSolverManager = new StellarSolverManager(this);
+    
+    // Connect signals with correct signatures
+    connect(m_stellarSolverManager, &StellarSolverManager::progressUpdated,
+            this, [this](int current, int total, const QString& status) {
+                m_progressBar->setValue(current);
+                m_progressBar->setMaximum(total);
+                logMessage(status, "blue");
+            });
+    
+    connect(m_stellarSolverManager, &StellarSolverManager::imageProcessed,
+            this, [this](const QString& filename, bool success, double ra, double dec, double pixelScale) {
+                if (success) {
+                    m_processedCount++;
+                    logMessage(QString("✓ Solved: %1 - RA: %2°, Dec: %3°, Scale: %4 arcsec/px")
+                               .arg(QFileInfo(filename).baseName())
+                               .arg(ra, 0, 'f', 4)
+                               .arg(dec, 0, 'f', 4)
+                               .arg(pixelScale, 0, 'f', 2), "green");
+                } else {
+                    m_errorCount++;
+                    logMessage(QString("✗ Failed: %1").arg(QFileInfo(filename).baseName()), "red");
+                }
+                updateProcessingStatus();
+            });
+    
+    connect(m_stellarSolverManager, &StellarSolverManager::imageSkipped,
+            this, [this](const QString& filename, const QString& reason) {
+                m_skippedCount++;
+                logMessage(QString("Skipped: %1 - %2").arg(QFileInfo(filename).baseName()).arg(reason), "orange");
+                updateProcessingStatus();
+            });
+    
+    connect(m_stellarSolverManager, &StellarSolverManager::batchComplete,
+            this, [this]() {
+                logMessage("Plate solving batch completed!", "green");
+                finishProcessing();
+            });
+    
+    connect(m_stellarSolverManager, &StellarSolverManager::errorOccurred,
+            this, [this](const QString& error) {
+                logMessage(QString("StellarSolver Error: %1").arg(error), "red");
+                m_errorCount++;
+                updateProcessingStatus();
+            });
+    
+    connect(m_stellarSolverManager, &StellarSolverManager::logOutput,
+            this, [this](const QString& message) {
+                logMessage(message, "gray");
+            });
+    
+    qDebug() << "StellarSolverManager initialized and connected";
 }
 
 void StellinaProcessor::onShowStretchedViewer()

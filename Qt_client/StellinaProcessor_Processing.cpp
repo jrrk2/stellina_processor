@@ -1,5 +1,4 @@
 #include "StellinaProcessor.h"
-#include "StellarSolverManager.h"
 #include "WcsAstrometricStacker.h"
 #include <QApplication>
 #include <QDir>
@@ -364,7 +363,7 @@ void StellinaProcessor::handlePipelineStageTransition() {
 // Replace your solve-field processing with:
 bool StellinaProcessor::processImagePlatesolving() {
     const QString &calibratedFitsPath = m_imagesToProcess[m_currentImageIndex];
-    
+//    if (!m_stellarSolverManager) m_stellarSolverManager = new StellarSolverManager;
     // Use StellarSolver instead of solve-field
     if (m_currentImageIndex == 0) {
             // Initialize batch on first image

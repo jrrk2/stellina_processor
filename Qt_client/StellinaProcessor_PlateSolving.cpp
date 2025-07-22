@@ -7,14 +7,14 @@
 // 5. Fixed undefined variables in runSolveField call
 // 6. Fixed Qt signal/slot connection
 
-#include "StellarSolverManager.h"
+#include <fitsio.h>
+#include "StellinaProcessor.h"
 #include "CoordinateUtils.h"
 #include <QDir>
 #include <QProcess>
 #include <QThread>
 #include <QFileInfo>
 #include <QApplication>
-#include <fitsio.h>
 
 // ============================================================================
 // Plate Solving Stage Functions (Symmetric with other stages)
@@ -298,4 +298,26 @@ bool StellinaProcessor::validateSolveFieldResult(const QString &solvedPath) {
     }
     
     return hasWCS;
+}
+
+void StellinaProcessor::onStellarSolverProgressUpdated(int current, int total, const QString& status) {
+    m_progressBar->setValue(current);
+    m_progressBar->setMaximum(total);
+    logMessage(status, "blue");
+}
+
+void StellinaProcessor::onStellarSolverImageSolved(const QString& filename, bool success, double ra, double dec, double pixelScale) {
+    if (success) {
+        m_processedCount++;
+        logMessage(QString("✓ Solved: %1 - RA: %2°, Dec: %3°, Scale: %4 arcsec/px")
+                   .arg(QFileInfo(filename).baseName())
+                   .arg(ra, 0, 'f', 4)
+                   .arg(dec, 0, 'f', 4)
+                   .arg(pixelScale, 0, 'f', 2), "green");
+    } else {
+        m_errorCount++;
+        logMessage(QString("✗ Failed: %1").arg(QFileInfo(filename).baseName()), "red");
+    }
+    
+    updateProcessingStatus();
 }

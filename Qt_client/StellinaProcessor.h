@@ -29,13 +29,13 @@
 #include <QProcessEnvironment>
 #include <fitsio.h>
 #include "StretchedImageViewer.h"
+#include "StellarSolverManager.h"
 
 //============================================================================
 // 2. ADD THESE FORWARD DECLARATIONS (if not already present)
 //============================================================================
 
 class WCSAstrometricStacker;
-class StellarSolverManager;
 
 // Processing modes
 enum ProcessingMode {
@@ -275,6 +275,8 @@ private slots:
     void onStellarSolverBatchComplete();
     void onStellarSolverImageSkipped(const QString& filename, const QString& reason);
     void onStellarSolverImageProcessed(const QString& filename, bool success, double ra, double dec, double pixelScale);
+    void onStellarSolverProgressUpdated(int current, int total, const QString& status);
+    void onStellarSolverImageSolved(const QString& filename, bool success, double ra, double dec, double pixelScale);
 
 private:
     // Session timing state

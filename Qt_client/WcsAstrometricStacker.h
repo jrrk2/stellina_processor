@@ -19,10 +19,6 @@
 #include <cmath>
 #include "StellinaProcessor.h"
 
-// Forward declarations
-struct StellinaImageData;
-struct StackingParams;
-
 // Simple TAN projection WCS implementation
 struct SimpleTANWCS {
     double crval1, crval2;  // Reference RA, Dec (degrees)
