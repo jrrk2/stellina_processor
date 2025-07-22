@@ -124,7 +124,6 @@ signals:
     void qualityAnalysisComplete();
 
 private slots:
-  //    void processNextImage();
 
 private:
     // Core processing functions

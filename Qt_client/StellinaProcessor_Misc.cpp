@@ -505,7 +505,7 @@ bool StellinaProcessor::writeStellinaMetadataWithCoordinates(const QString &fits
     if (imageData.hasValidCoordinates && !imageData.dateObs.isEmpty()) {
       double obslat, obslong, jd, lst, ha;
       if (convertAltAzToRaDecExt(imageData.altitude, imageData.azimuth, imageData.dateObs, ra, dec, obslat, obslong, jd, lst, ha)) {
-          qDebug() << "converted eq" << ra << " " << dec << " " << ha;
+         // qDebug() << "converted eq" << ra << " " << dec << " " << ha;
 
 	    if (fits_write_key(fptr, TDOUBLE, "OBSLAT", &obslat, "Observer latitude for coordinate conversion", &status)) {
                     logMessage("Warning: Could not write observer latitude", "orange");
@@ -606,9 +606,10 @@ bool StellinaProcessor::writeStellinaMetadataWithCoordinates(const QString &fits
         logMessage("Warning: Could not write timestamp", "orange");
         status = 0;
     }
-    
+
+/*
     // Add comprehensive processing history including acqTime
-    QString historyComment = QString("Stellina: Alt=%.2f°, Az=%.2f°, RA=%.6f°, Dec=%.6f°, Exp=%1s, acqTime=%2ms")
+    QString historyComment = QString("Stellina: Alt=%d°, Az=%.2f°, RA=%.6f°, Dec=%.6f°, Exp=%1s, acqTime=%2ms")
                                 .arg(exposure)
                                 .arg(imageData.altitude)
                                 .arg(imageData.azimuth)
@@ -621,7 +622,7 @@ bool StellinaProcessor::writeStellinaMetadataWithCoordinates(const QString &fits
         logMessage("Warning: Could not write processing history", "orange");
         status = 0;
     }
-    
+*/
     fits_close_file(fptr, &status);
     
     if (status != 0) {

@@ -48,7 +48,6 @@ public:
         job.filename = filename;
         job.jobId = m_jobQueue.size() + 1;
         m_jobQueue.enqueue(job);
-        m_totalJobs++;
     }
 
     void startBatchSolving() {
@@ -58,16 +57,23 @@ public:
             return;
         }
 
+	m_totalJobs = m_jobQueue.size();
         std::cout << "=== Parallel Plate Solving ===" << std::endl;
         std::cout << "Total jobs: " << m_totalJobs << std::endl;
         std::cout << "Max concurrent: " << m_maxConcurrent << std::endl;
         std::cout << std::endl;
 
         m_batchStartTime = QDateTime::currentDateTime();
-        
+	    emit statusChanged(QString("Starting batch solve: %1 jobs").arg(m_totalJobs));
+       
         // Start initial batch of jobs
         startNextJobs();
     }
+
+signals:
+    void progressChanged(int completed, int total);  // Main progress signal
+    void statusChanged(const QString& message);      // Status updates
+    void batchFinished(int successful, int failed);  // Completion signal
 
 private slots:
     void onSolverFinished() {
@@ -110,7 +116,8 @@ private slots:
         }
 
         // Store completed job
-        m_completedJobs++;
+        m_completedJobs = m_totalJobs - m_jobQueue.size();
+	    emit progressChanged(m_completedJobs, m_totalJobs);
         m_results.append(job);
         
         // Clean up solver
@@ -364,8 +371,8 @@ private:
             std::cout << "  Throughput (successful): " << std::fixed << std::setprecision(2) 
                       << (successful / (totalBatchTime / 1000.0)) << " solves/second" << std::endl;
         }
-        
-        QCoreApplication::quit();
+	
+	emit batchFinished(successful, failed);
     }
 
     QStringList findIndexFiles() {

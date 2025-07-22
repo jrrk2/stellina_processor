@@ -127,6 +127,7 @@ bool StellinaProcessor::setupPlatesolvingStage() {
         StellinaImageData tempData;
         if (readStellinaMetadataFromFits(fullPath, tempData) && tempData.hasValidCoordinates) {
             m_imagesToProcess.append(fullPath);
+            m_stellarSolverManager->addJob(fullPath);
             validFiles++;
         } else {
             logMessage(QString("Skipping %1: no coordinate metadata").arg(calibratedFile), "orange");
@@ -149,7 +150,8 @@ bool StellinaProcessor::setupPlatesolvingStage() {
             return false;
         }
     }
-    
+    // Start batch processing
+    m_stellarSolverManager->startBatchSolving();
     return true;
 }
 
@@ -283,7 +285,6 @@ bool StellinaProcessor::accumulateStacking() {
     return true;
 }
 
-// Simplified processNextImage that doesn't handle stage transitions
 void StellinaProcessor::processNextImage() {
     bool complete = m_currentStage == STAGE_INTEGRATION ? m_currentIntegrationRow >= m_wcsStacker->getOutputHeight() :
     m_currentImageIndex >= m_imagesToProcess.length();
@@ -326,12 +327,11 @@ void StellinaProcessor::processNextImage() {
             break;
         case STAGE_PLATE_SOLVING:
             success = processImagePlatesolving();
-            m_progressBar->setValue(++m_currentImageIndex);
+            m_progressBar->setValue(m_currentImageIndex);
             // Update time estimate
             elapsed = QDateTime::currentMSecsSinceEpoch() - m_processingStartTime;
             avgTimePerImage = static_cast<double>(elapsed) / m_currentImageIndex;
             remaining = static_cast<qint64>((m_imagesToProcess.length() - m_currentImageIndex) * avgTimePerImage);
-            
             m_timeEstimateLabel->setText(QString("Estimated time remaining: %1")
                                             .arg(formatProcessingTime(remaining)));
             break;
@@ -420,26 +420,6 @@ void StellinaProcessor::handlePipelineStageTransition() {
 
 // Replace your solve-field processing with:
 bool StellinaProcessor::processImagePlatesolving() {
-    const QString &calibratedFitsPath = m_imagesToProcess[m_currentImageIndex];
-    if (m_currentImageIndex == 0) {
-        // Collect files to process
-        for (const QString& arg : m_imagesToProcess) {
-            QFileInfo info(arg);
-            if (info.isDir()) {
-                QDir dir(arg);
-                QStringList filters;
-                filters << "*.fits" << "*.fit";
-                auto files = dir.entryInfoList(filters, QDir::Files, QDir::Name);
-                for (const auto& file : files) {
-                    m_stellarSolverManager->addJob(file.absoluteFilePath());
-                }
-            } else if (info.exists()) {
-                m_stellarSolverManager->addJob(info.absoluteFilePath());
-            }
-        }
-        // Start batch processing
-            m_stellarSolverManager->startBatchSolving();
-    }
     return true; // Return immediately, completion handled by signals
 }
 

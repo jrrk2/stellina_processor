@@ -115,6 +115,27 @@ void StellinaProcessor::connectSignals() {
             saveMountTiltToSettings();
         });
     }
+    connect(m_stellarSolverManager, &ParallelStellarSolver::progressChanged,
+            this, [this](int completed, int total) {
+	      m_currentImageIndex = completed;
+          });
+    
+    connect(m_stellarSolverManager, &ParallelStellarSolver::statusChanged,
+            this, [this](const QString& message) {
+                logMessage(message, "blue");
+            });
+    
+    connect(m_stellarSolverManager, &ParallelStellarSolver::batchFinished,
+            this, [this](int successful, int failed) {
+                logMessage(QString("Plate solving complete: %1 success, %2 failed").arg(successful).arg(failed), "green");
+                // Continue to next processing stage if needed
+                if (m_processingMode == MODE_FULL_PIPELINE) {
+                    handlePipelineStageTransition();
+                } else {
+                    finishProcessing();
+                }
+            });
+
 }
 
 // UI Event Handlers
@@ -345,27 +366,4 @@ void StellinaProcessor::onStellarSolverProgress(int current, int total, const QS
     m_progressBar->setValue(current);
     m_currentTaskLabel->setText(status);
     QApplication::processEvents(); // Keep UI responsive
-}
-
-void StellinaProcessor::onStellarSolverImageProcessed(const QString& filename, bool success, 
-                                                     double ra, double dec, double pixelScale) {
-    if (success) {
-        m_processedCount++;
-        // Store results, update your ProcessedImageData structure
-        // ... your existing success handling
-    } else {
-        m_errorCount++;
-        // ... your existing error handling
-    }
-    
-    // Move to next image automatically
-    m_currentImageIndex++;
-    updateProcessingStatus();
-    
-    // Continue processing or finish
-    if (m_currentImageIndex < m_imagesToProcess.length()) {
-        QTimer::singleShot(10, this, &StellinaProcessor::processNextImage);
-    } else {
-        finishProcessing();
-    }
 }

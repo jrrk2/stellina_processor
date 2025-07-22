@@ -368,7 +368,7 @@ std::tuple<double, double, double> CoordinateUtils::altAzToRaDec(
     
     blindAltAzToEquatorial(trueAlt, az, latitude, lst, ra, dec, ha);
       
-    qDebug() << "blind eq" << ra << " " << dec << " " << ha;
+    // qDebug() << "blind eq" << ra << " " << dec << " " << ha;
 
     return std::make_tuple(ra, dec, ha);
 }
@@ -401,7 +401,7 @@ std::tuple<double, double> CoordinateUtils::jNowToJ2000(double raNow, double dec
     CoordinateUtilsJSStyle::calcPrecessionRigorous(raNow, decNow, julianYear, 2000.0 - julianYear,
                                                   deltaRA, deltaDec);
     
-    qDebug() << "delta J2000" << deltaRA << " " << deltaDec;
+    // qDebug() << "delta J2000" << deltaRA << " " << deltaDec;
     
     double ra2000 = CoordinateUtilsJSStyle::validRev(raNow + deltaRA);
     double dec2000 = CoordinateUtilsJSStyle::validDec(decNow + deltaDec);

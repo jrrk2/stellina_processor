@@ -517,7 +517,6 @@ WCSAstrometricStacker::WCSAstrometricStacker(QObject *parent)
     
     // Set up processing timer for non-blocking operation
     m_processing_timer->setSingleShot(true);
-    //    connect(m_processing_timer, &QTimer::timeout, this, &WCSAstrometricStacker::processNextImage);
 }
 
 WCSAstrometricStacker::~WCSAstrometricStacker() {

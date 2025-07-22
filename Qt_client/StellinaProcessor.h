@@ -274,7 +274,7 @@ private slots:
 //    void onStellarSolverError(const QString& error);
 //    void onStellarSolverBatchComplete();
 //    void onStellarSolverImageSkipped(const QString& filename, const QString& reason);
-    void onStellarSolverImageProcessed(const QString& filename, bool success, double ra, double dec, double pixelScale);
+//    void onStellarSolverImageProcessed(const QString& filename, bool success, double ra, double dec, double pixelScale);
 //    void onStellarSolverProgressUpdated(int current, int total, const QString& status);
 //    void onStellarSolverImageSolved(const QString& filename, bool success, double ra, double dec, double pixelScale);
 
@@ -682,7 +682,6 @@ private:
     void onStackingCompleted(); // Modify existing or add new
     QString getCurrentStackedImagePath();
     bool calculateImageCoordinates(StellinaImageData &imageData);
-    bool processImagePlatesolving(const QString &currentFile);
     bool finalizePlatesolvingStage();
     bool validateSolveFieldResult(const QString &solvedPath);
     QString generatePlateSolvedPath(const QString &inputPath);
