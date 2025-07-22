@@ -654,3 +654,42 @@ bool StellinaProcessor::readStellinaDataFromSolvedFits(const QString &fitsPath, 
     fits_close_file(fptr, &status);
     return true;
 }
+
+bool StellinaProcessor::readSolveFieldResults(const QString &fitsPath, ProcessedImageData &data) {
+    fitsfile *fptr = nullptr;
+    int status = 0;
+    
+    QByteArray pathBytes = fitsPath.toLocal8Bit();
+    if (fits_open_file(&fptr, pathBytes.data(), READONLY, &status)) {
+        return false;
+    }
+    
+    // Read WCS parameters
+    if (fits_read_key(fptr, TDOUBLE, "CRVAL1", &data.solvedRA, nullptr, &status) != 0) {
+        fits_close_file(fptr, &status);
+        return false;
+    }
+    
+    status = 0;
+    if (fits_read_key(fptr, TDOUBLE, "CRVAL2", &data.solvedDec, nullptr, &status) != 0) {
+        fits_close_file(fptr, &status);
+        return false;
+    }
+    
+    // Read CD matrix for pixel scale
+    double cd11, cd12, cd21, cd22;
+    status = 0;
+    if (fits_read_key(fptr, TDOUBLE, "CD1_1", &cd11, nullptr, &status) == 0 &&
+        fits_read_key(fptr, TDOUBLE, "CD1_2", &cd12, nullptr, &status) == 0 &&
+        fits_read_key(fptr, TDOUBLE, "CD2_1", &cd21, nullptr, &status) == 0 &&
+        fits_read_key(fptr, TDOUBLE, "CD2_2", &cd22, nullptr, &status) == 0) {
+        
+        // Calculate pixel scale from CD matrix
+        // FIXED: Add pixelScale member to ProcessedImageData
+        data.pixelScale = sqrt(cd11*cd11 + cd12*cd12) * 3600.0; // arcsec/pixel
+        data.hasValidWCS = true;
+    }
+    
+    fits_close_file(fptr, &status);
+    return data.hasValidWCS;
+}

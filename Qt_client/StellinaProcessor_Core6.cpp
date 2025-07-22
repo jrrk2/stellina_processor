@@ -24,56 +24,6 @@
 #include <limits>
 #include <algorithm>  // for std::fmod if needed
 
-/*
-// Helper function to read solve-field results from WCS headers
-bool StellinaProcessor::readSolveFieldResults(const QString &fitsPath, ProcessedImageData &data) {
-    fitsfile *fptr = nullptr;
-    int status = 0;
-    
-    QByteArray pathBytes = fitsPath.toLocal8Bit();
-    if (fits_open_file(&fptr, pathBytes.data(), READONLY, &status)) {
-        return false;
-    }
-    
-    // Read WCS reference point (CRVAL1/CRVAL2 are RA/Dec of reference pixel)
-    double crval1, crval2;
-    if (fits_read_key(fptr, TDOUBLE, "CRVAL1", &crval1, nullptr, &status) == 0 &&
-        fits_read_key(fptr, TDOUBLE, "CRVAL2", &crval2, nullptr, &status) == 0) {
-        data.solvedRA = crval1;
-        data.solvedDec = crval2;
-        fits_close_file(fptr, &status);
-        return true;
-    }
-    
-    // If WCS not available, try to parse from solve-field comments in header
-    // Look for "Field center: (RA,Dec) = (xxx, yyy)" in HISTORY cards
-    status = 0;
-    int nkeys;
-    fits_get_hdrspace(fptr, &nkeys, nullptr, &status);
-    
-    for (int i = 1; i <= nkeys; ++i) {
-        char card[FLEN_CARD];
-        if (fits_read_record(fptr, i, card, &status) == 0) {
-            QString cardStr = QString::fromLatin1(card);
-            
-            // Look for solve-field result pattern
-            QRegularExpression fieldCenterRegex(R"(Field center.*\(RA,Dec\)\s*=\s*\(([\d.]+),\s*([\d.]+)\))");
-            QRegularExpressionMatch match = fieldCenterRegex.match(cardStr);
-            if (match.hasMatch()) {
-                data.solvedRA = match.captured(1).toDouble();
-                data.solvedDec = match.captured(2).toDouble();
-                fits_close_file(fptr, &status);
-                return true;
-            }
-        }
-        status = 0; // Reset for next iteration
-    }
-    
-    fits_close_file(fptr, &status);
-    return false;
-}
-*/
-
 // Update the analyzeAndCalibrateFromData function to use linear regression
 // Replace the existing function in StellinaProcessor_Core.cpp
 

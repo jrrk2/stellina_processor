@@ -54,7 +54,6 @@ SOURCES += \
     StellinaProcessor_Slots.cpp \
     StellinaProcessor_Misc.cpp \
     StellinaProcessor_UI.cpp \
-    StellinaProcessor_PlateSolving.cpp \
     StellinaProcessor_Utils.cpp \
     StellinaProcessor_WCS_Integration.cpp \
     StretchedImageViewer.cpp \

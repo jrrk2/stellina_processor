@@ -1,367 +1,410 @@
+#include <QCoreApplication>
+#include <QObject>
+#include <QQueue>
+#include <iostream>
 #include <fitsio.h>
+
+// StellarSolver includes
 #include <stellarsolver.h>
 #include <parameters.h>
 #include <structuredefinitions.h>
-#include <QElapsedTimer>
-#include <QTimer>
-// ===============================================================================
-// CRITICAL FIX: StellarSolverManager Constructor Missing Member Initialization
-// ===============================================================================
 
-// The problem is in StellarSolverManager.h - the constructor doesn't initialize m_imageFiles!
+struct SolveJob {
+    QString filename;
+    int jobId;
+    QDateTime startTime;
+    QString status = "PENDING";
+    double ra = -1;
+    double dec = -91;
+    double pixelScale = 0;
+    double solveTime = 0;
+    double totalTime = 0;
+};
 
-// REPLACE the constructor in StellarSolverManager.h with this:
-
-class StellarSolverManager : public QObject {
+class ParallelStellarSolver : public QObject
+{
     Q_OBJECT
 
 public:
-    // FIXED CONSTRUCTOR - Initialize ALL member variables
-    StellarSolverManager(QObject* parent = nullptr) 
-        : QObject(parent)
-        , m_solver(nullptr)
-        , m_currentImageIndex(0)
-        , m_totalImages(0)
-        , m_imageFilesVector()          // ADD THIS LINE - Initialize QStringList
-        , m_indexPaths()          // ADD THIS LINE - Initialize QStringList
-        , m_results()             // ADD THIS LINE - Initialize QList
-        , m_imageBuffer()         // ADD THIS LINE - Initialize vector
-        , m_imageBuffer8()        // ADD THIS LINE - Initialize vector
-    {
-        setupParameters();
-        findIndexFiles();
-        // Explicitly initialize all member variables
-        m_indexPaths = QStringList();
-        m_results = QList<QPair<QString, bool>>();
-        m_imageBuffer = std::vector<float>();
-        m_imageBuffer8 = std::vector<uint8_t>();
-        m_currentImageIndex = 0;
-        m_totalImages = 0;
+    ParallelStellarSolver(int maxConcurrent = 8, QObject *parent = nullptr) 
+        : QObject(parent), m_maxConcurrent(maxConcurrent), m_completedJobs(0) {
         
-        qDebug() << "StellarSolverManager: Members explicitly initialized";
-        
-        // Verify initialization worked
-        qDebug() << "StellarSolverManager initialized:";
-        qDebug() << "  m_imageFiles size:" << m_imageFilesVector.size();
-        qDebug() << "  m_indexPaths size:" << m_indexPaths.size();
-        qDebug() << "  m_results size:" << m_results.size();
-    }
-
-    ~StellarSolverManager() {
-        if (m_solver) {
-            if (m_solver->isRunning()) {
-                m_solver->abortAndWait();
-            }
-            m_solver->deleteLater();
-        }
+        // Setup shared parameters once
+        setupCommonParameters();
     }
     
-    void processNextImage() {
-        if (m_currentImageIndex >= m_totalImages) {
-            emit batchComplete();
+    ~ParallelStellarSolver() {
+        // Clean up any remaining solvers
+        for (auto* solver : m_activeSolvers.keys()) {
+            if (solver && solver->isRunning()) {
+                solver->abortAndWait();
+            }
+            solver->deleteLater();
+        }
+    }
+
+    void addJob(const QString& filename) {
+        SolveJob job;
+        job.filename = filename;
+        job.jobId = m_jobQueue.size() + 1;
+        m_jobQueue.enqueue(job);
+        m_totalJobs++;
+    }
+
+    void startBatchSolving() {
+        if (m_jobQueue.isEmpty()) {
+            std::cerr << "No jobs to process!" << std::endl;
+            QCoreApplication::quit();
             return;
         }
 
-        const QString& currentFile = m_imageFilesVector[m_currentImageIndex];
-        emit progressUpdated(m_currentImageIndex, m_totalImages,
-                           QString("Processing: %1").arg(QFileInfo(currentFile).baseName()));
+        std::cout << "=== Parallel Plate Solving ===" << std::endl;
+        std::cout << "Total jobs: " << m_totalJobs << std::endl;
+        std::cout << "Max concurrent: " << m_maxConcurrent << std::endl;
+        std::cout << std::endl;
 
-        // Clean up previous solver
-        if (m_solver) {
-            m_solver->deleteLater();
-        }
-
-        // Create new solver for this image
-        m_solver = new StellarSolver(this);
+        m_batchStartTime = QDateTime::currentDateTime();
         
-        // Connect signals for this solve
-        connect(m_solver, &StellarSolver::finished, this, &StellarSolverManager::onSolveFinished);
-        connect(m_solver, &StellarSolver::logOutput, this, &StellarSolverManager::onLogOutput);
-        
-        // Configure solver
-        m_solver->setProperty("ProcessType", SSolver::SOLVE);
-        m_solver->setProperty("ExtractorType", SSolver::EXTRACTOR_INTERNAL);
-        m_solver->setProperty("SolverType", SSolver::SOLVER_STELLARSOLVER);
-        m_solver->setIndexFolderPaths(m_indexPaths);
-        m_solver->setParameters(m_params);
-
-        // Load image and start solving
-        if (loadFITSImage(currentFile)) {
-            m_solveStartTime.start();
-            m_solver->start();
-        } else {
-            // Skip this image and continue
-            emit imageSkipped(currentFile, "Failed to load FITS image");
-            m_currentImageIndex++;
-            QTimer::singleShot(10, this, &StellarSolverManager::processNextImage);
-        }
+        // Start initial batch of jobs
+        startNextJobs();
     }
-
-    // Abort current processing
-    void abortProcessing() {
-        if (m_solver && m_solver->isRunning()) {
-            m_solver->abortAndWait();
-        }
-    }
-    
-    // SAFE VERSION of initializeBatch
-    bool initializeBatch(const QStringList& imageFiles) {
-        qDebug() << "initializeBatch called with" << imageFiles.size() << "files";
-        
-        if (imageFiles.isEmpty()) {
-            emit errorOccurred("No image files provided!");
-            return false;
-        }
-        
-        try {
-	  m_imageFilesVector.clear();
-	  for (const QString& file : imageFiles) {
-            m_imageFilesVector.push_back(file);
-	  }
-            m_totalImages = m_imageFilesVector.size();
-            m_currentImageIndex = 0;
-            m_results.clear();
-            
-            qDebug() << "Assignment successful, m_imageFiles now has" << m_imageFilesVector.size() << "files";
-            
-        } catch (const std::exception& e) {
-            qDebug() << "Exception during assignment:" << e.what();
-            return false;
-        } catch (...) {
-            qDebug() << "Unknown exception during assignment";
-            return false;
-        }
-        
-        if (m_indexPaths.isEmpty()) {
-            emit errorOccurred("No astrometry index files found!");
-            return false;
-        }
-        
-        return true;
-    }
-
-signals:
-    void imageSolved(const QString& filename, double ra, double dec, double pixelScale);
-    void progressUpdated(int current, int total, const QString& status);
-    void imageProcessed(const QString& filename, bool success, double ra, double dec, double
- pixelScale);
-    void imageSkipped(const QString& filename, const QString& reason);
-    void batchComplete();
-    void errorOccurred(const QString& error);
-    void logOutput(const QString& message);
 
 private slots:
-    void onSolveFinished() {
-        if (!m_solver) return;
+    void onSolverFinished() {
+        StellarSolver* solver = qobject_cast<StellarSolver*>(sender());
+        if (!solver || !m_activeSolvers.contains(solver)) {
+            return;
+        }
 
-        const QString& currentFile = m_imageFilesVector[m_currentImageIndex];
-        bool success = false;
-        double ra = -1, dec = -91, pixelScale = 0;
+        SolveJob& job = m_activeSolvers[solver];
+        
+        // Calculate times
+        qint64 totalMs = job.startTime.msecsTo(QDateTime::currentDateTime());
+        job.totalTime = totalMs / 1000.0;
 
-        if (m_solver->solvingDone() && m_solver->hasWCSData()) {
-            FITSImage::Solution solution = m_solver->getSolution();
-            success = true;
-            ra = solution.ra;
-            dec = solution.dec;
-            pixelScale = solution.pixscale;
+        // Process results
+        if (solver->solvingDone() && solver->hasWCSData()) {
+            FITSImage::Solution solution = solver->getSolution();
+            job.status = "SUCCESS";
+            job.ra = solution.ra;
+            job.dec = solution.dec;
+            job.pixelScale = solution.pixscale / 2.0; // Correct for 2x downsampling
+            job.solveTime = job.totalTime; // Approximate since we don't have internal timing
             
-            emit logOutput(QString("✓ Solved: %1 - RA: %2°, Dec: %3°, Scale: %4 arcsec/pix")
-                          .arg(QFileInfo(currentFile).baseName())
-                          .arg(ra, 0, 'f', 4)
-                          .arg(dec, 0, 'f', 4)
-                          .arg(pixelScale, 0, 'f', 2));
+            std::cout << "[Job " << job.jobId << "] ✓ SUCCESS: " << QFileInfo(job.filename).baseName().toStdString() << std::endl;
+            std::cout << "    RA: " << job.ra << "°, Dec: " << job.dec << "°" << std::endl;
+            std::cout << "    Pixel scale: " << job.pixelScale << " arcsec/pix" << std::endl;
+            std::cout << "    Total time: " << std::fixed << std::setprecision(2) << job.totalTime << "s" << std::endl;
         } else {
-            QString reason = "Unknown failure";
-            if (m_solver->failed()) {
-                reason = "Solver failed";
-            } else if (!m_solver->solvingDone()) {
-                reason = "Solving incomplete";
+            job.status = "FAILED";
+            std::cout << "[Job " << job.jobId << "] ✗ FAILED: " << QFileInfo(job.filename).baseName().toStdString();
+            if (solver->failed()) {
+                std::cout << " (solver failed)";
+            } else if (!solver->solvingDone()) {
+                std::cout << " (incomplete)";
             } else {
-                reason = "No WCS data";
+                std::cout << " (no WCS data)";
             }
-            
-            emit logOutput(QString("✗ Failed: %1 - %2 (%.1fs)")
-                          .arg(QFileInfo(currentFile).baseName())
-                          .arg(reason)
-                          .arg(m_solveStartTime.elapsed() / 1000.0));
+            std::cout << std::endl;
+            std::cout << "    Total time: " << std::fixed << std::setprecision(2) << job.totalTime << "s" << std::endl;
         }
 
-        emit imageProcessed(currentFile, success, ra, dec, pixelScale);
-
-        // Move to next image
-        m_currentImageIndex++;
+        // Store completed job
+        m_completedJobs++;
+        m_results.append(job);
         
-        // Process next image after a brief delay to keep UI responsive
-        QTimer::singleShot(10, this, &StellarSolverManager::processNextImage);
+        // Clean up solver
+        m_activeSolvers.remove(solver);
+        solver->deleteLater();
+
+        // Progress update
+	    // progressUpdated(m_completedJobs);
+        std::cout << "Progress: " << m_completedJobs << "/" << m_totalJobs << " completed" << std::endl;
+        std::cout << std::endl;
+
+        // Start next job if available
+        startNextJobs();
+
+        // Check if all jobs complete
+        if (m_completedJobs >= m_totalJobs) {
+            finishBatch();
+        }
     }
 
-    void onLogOutput(const QString& message) {
-        emit logOutput(QString("StellarSolver: %1").arg(message));
-    }
-    
 private:
-    std::vector<QString> m_imageFilesVector;
-    StellarSolver* m_solver;
-    Parameters m_params;
-    
-    QStringList m_indexPaths;                              // This was missing initialization!
-    QList<QPair<QString, bool>> m_results;                 // This was missing initialization!
-    
-    int m_currentImageIndex;
-    int m_totalImages;
-    
-    std::vector<float> m_imageBuffer;                      // This was missing initialization!
-    std::vector<uint8_t> m_imageBuffer8;                   // This was missing initialization!
-    QHash<StellarSolver*, std::vector<uint8_t>> m_imageBuffers;
-    QElapsedTimer m_solveStartTime;
-    
-    // Add these methods if they don't exist:
-    void setupParameters() {
-        // Initialize solver parameters
-        m_params.listName = "Default";
-        // ... set other parameters
-    }
-    
-    void findIndexFiles() {
-        // Search for astrometry index files
-        QStringList searchPaths = {
-            "/usr/local/astrometry/data",
-            "/opt/homebrew/share/astrometry",
-            "/usr/share/astrometry",
-            QDir::homePath() + "/.local/share/astrometry"
-        };
-        
-        m_indexPaths.clear();
-        
-        for (const QString& path : searchPaths) {
-            QDir dir(path);
-            if (dir.exists()) {
-                QStringList indexFiles = dir.entryList(QStringList() << "index-*.fits", QDir::Files);
-                for (const QString& file : indexFiles) {
-                    m_indexPaths << dir.absoluteFilePath(file);
-                }
-            }
+    void setupCommonParameters() {
+        // Get built-in profiles
+        QList<Parameters> profiles = StellarSolver::getBuiltInProfiles();
+        if (profiles.isEmpty()) {
+            std::cerr << "ERROR: No parameter profiles available" << std::endl;
+            return;
         }
-        
-        qDebug() << "Found" << m_indexPaths.size() << "astrometry index files";
+
+        m_commonParams = profiles.at(0); // Use first profile as base
+
+        // Configure parameters
+        m_commonParams.multiAlgorithm = SSolver::MULTI_AUTO;
+        m_commonParams.search_radius = 2.0;      // Match --radius=2 
+        m_commonParams.minwidth = 0.1;
+        m_commonParams.maxwidth = 10.0;
+        m_commonParams.resort = true;
+        m_commonParams.autoDownsample = false;
+        m_commonParams.downsample = 1;           // We do our own downsampling
+        m_commonParams.inParallel = true;
+        m_commonParams.solverTimeLimit = 300;
+
+        // Star extraction parameters
+        m_commonParams.initialKeep = 2000;
+        m_commonParams.keepNum = 500;
+        m_commonParams.r_min = 1.0;
+        m_commonParams.removeBrightest = 0;
+        m_commonParams.removeDimmest = 50;
+        m_commonParams.saturationLimit = 65000;
+        m_commonParams.minarea = 5;
+        m_commonParams.threshold_offset = 0;
+        m_commonParams.threshold_bg_multiple = 2.0;
+
+        // Find index files
+        m_indexPaths = findIndexFiles();
+        if (m_indexPaths.isEmpty()) {
+            std::cerr << "ERROR: No astrometry index files found!" << std::endl;
+        }
     }
 
-    bool loadFITSImage(const QString& filename) {
-        if (!m_solver) return false;
+    void startNextJobs() {
+        while (m_activeSolvers.size() < m_maxConcurrent && !m_jobQueue.isEmpty()) {
+            SolveJob job = m_jobQueue.dequeue();
+            startSingleJob(job);
+        }
+    }
 
-        // Load FITS file using CFITSIO
+    void startSingleJob(SolveJob job) {
+        // Create new solver
+        StellarSolver* solver = new StellarSolver(this);
+        
+        // Connect signals
+        connect(solver, &StellarSolver::finished, this, &ParallelStellarSolver::onSolverFinished);
+        
+        // Configure solver
+        solver->setProperty("ProcessType", SSolver::SOLVE);
+        solver->setProperty("ExtractorType", SSolver::EXTRACTOR_INTERNAL);
+        solver->setProperty("SolverType", SSolver::SOLVER_STELLARSOLVER);
+        solver->setIndexFolderPaths(m_indexPaths);
+        solver->setParameters(m_commonParams);
+
+        // Load FITS image
+        if (!loadFITSImage(solver, job.filename)) {
+            job.status = "SKIPPED_NO_COORDS";
+            m_completedJobs++;
+            m_results.append(job);
+            solver->deleteLater();
+            
+            std::cout << "[Job " << job.jobId << "] ⚬ SKIPPED: " << QFileInfo(job.filename).baseName().toStdString() 
+                      << " (no STELLRA/STELLDEC keywords)" << std::endl;
+            
+            if (m_completedJobs >= m_totalJobs) {
+                finishBatch();
+            } else {
+                startNextJobs();
+            }
+            return;
+        }
+
+        // Start timing and add to active jobs
+        job.startTime = QDateTime::currentDateTime();
+        m_activeSolvers[solver] = job;
+        
+        std::cout << "[Job " << job.jobId << "] Starting: " << QFileInfo(job.filename).baseName().toStdString() << std::endl;
+        
+        // Start solving
+        solver->start();
+    }
+
+    bool loadFITSImage(StellarSolver* solver, const QString& fitsFile) {
         fitsfile *fptr;
         int status = 0;
+        int naxis, bitpix;
+        long naxes[2];
         
-        if (fits_open_file(&fptr, filename.toLocal8Bit().data(), READONLY, &status)) {
+        // Open FITS file
+        if (fits_open_file(&fptr, fitsFile.toLocal8Bit().data(), READONLY, &status)) {
             return false;
         }
-
-        // Read coordinate hints if available (STELLRA/STELLDEC)
+        
+        // Check for required STELLRA and STELLDEC keywords - skip if missing
         double fitsRA = -1, fitsDec = -91;
         char comment[FLEN_COMMENT];
-         
+        
         status = 0;
         bool hasSTELLRA = (fits_read_key(fptr, TDOUBLE, "STELLRA", &fitsRA, comment, &status) == 0);
         status = 0;
         bool hasSTELLDEC = (fits_read_key(fptr, TDOUBLE, "STELLDEC", &fitsDec, comment, &status) == 0);
         
-        // Set coordinate hints if available
-        if (hasSTELLRA && hasSTELLDEC && 
-            fitsRA >= 0 && fitsRA <= 360 && 
-            fitsDec >= -90 && fitsDec <= 90) {
-            m_solver->setSearchPositionInDegrees(fitsRA, fitsDec);
+        // Skip files without both STELLRA and STELLDEC
+        if (!hasSTELLRA || !hasSTELLDEC || fitsRA < 0 || fitsRA > 360 || fitsDec < -90 || fitsDec > 90) {
+            fits_close_file(fptr, &status);
+            return false;  // This will trigger LOAD_FAILED handling
         }
- 
+        
+        // Set coordinate hints
+        solver->setSearchPositionInDegrees(fitsRA, fitsDec);
+        
         // Get image dimensions
-        int naxis, bitpix;
-        long naxes[2];
         status = 0;
         if (fits_get_img_param(fptr, 2, &bitpix, &naxis, naxes, &status) || naxis != 2) {
             fits_close_file(fptr, &status);
             return false;
         }
-        return true;
+        
+        int width = static_cast<int>(naxes[0]);
+        int height = static_cast<int>(naxes[1]);
+        long npixels = width * height;
+        
+        // Allocate and read image data
+        std::vector<float> imageData(npixels);
+        long firstPix[2] = {1, 1};
+        if (fits_read_pix(fptr, TFLOAT, firstPix, npixels, nullptr, 
+                         imageData.data(), nullptr, &status)) {
+            fits_close_file(fptr, &status);
+            return false;
+        }
+        
+        fits_close_file(fptr, &status);
+        
+        // Calculate statistics
+        float minVal = *std::min_element(imageData.begin(), imageData.end());
+        float maxVal = *std::max_element(imageData.begin(), imageData.end());
+        
+        // Downsample with Bayer-aware processing
+        const int downsampleFactor = 2;
+        int outputWidth = width / downsampleFactor;
+        int outputHeight = height / downsampleFactor;
+        
+        std::vector<uint8_t> buffer(outputWidth * outputHeight);
+        float range = maxVal - minVal;
+        
+        if (range > 0) {
+            for (int y = 0; y < outputHeight; y++) {
+                for (int x = 0; x < outputWidth; x++) {
+                    int srcY = y * downsampleFactor;
+                    int srcX = x * downsampleFactor;
+                    
+                    if (srcY + 1 >= height || srcX + 1 >= width) continue;
+                    
+                    // 2x2 Bayer pattern with proper weighting
+                    float r = imageData[srcY * width + srcX];
+                    float g1 = imageData[srcY * width + srcX + 1];
+                    float g2 = imageData[(srcY + 1) * width + srcX];
+                    float b = imageData[(srcY + 1) * width + srcX + 1];
+                    
+                    float avg = (r + (g1 + g2) * 0.5f + b) / 3.0f;
+                    float normalized = (avg - minVal) / range;
+                    buffer[y * outputWidth + x] = static_cast<uint8_t>(std::clamp(normalized * 255.0f, 0.0f, 255.0f));
+                }
+            }
+        } else {
+            std::fill(buffer.begin(), buffer.end(), 128);
+        }
+        
+        // Create statistics
+        FITSImage::Statistic stats{};
+        stats.width = outputWidth;
+        stats.height = outputHeight;
+        stats.channels = 1;
+        stats.dataType = TBYTE;
+        stats.bytesPerPixel = 1;
+        
+        for (int i = 0; i < 3; i++) {
+            stats.min[i] = (i == 0) ? minVal : 0.0;
+            stats.max[i] = (i == 0) ? maxVal : 0.0;
+            stats.mean[i] = (i == 0) ? (minVal + maxVal) / 2.0 : 0.0;
+            stats.stddev[i] = 0.0;
+            stats.median[i] = (i == 0) ? (minVal + maxVal) / 2.0 : 0.0;
+        }
+        stats.SNR = 1.0;
+        
+        // Store buffer in solver-specific storage to keep it alive
+        m_imageBuffers[solver] = std::move(buffer);
+        
+        // Load into solver
+        return solver->loadNewImageBuffer(stats, m_imageBuffers[solver].data());
     }
+
+    void finishBatch() {
+        qint64 totalBatchTime = m_batchStartTime.msecsTo(QDateTime::currentDateTime());
+        
+        std::cout << "=== Batch Complete ===" << std::endl;
+        std::cout << "Total time: " << (totalBatchTime / 1000.0) << " seconds" << std::endl;
+        std::cout << std::endl;
+        
+        // Print summary
+        int successful = 0;
+        int failed = 0;
+        int skipped = 0;
+        double totalSolveTime = 0;
+        
+        for (const auto& result : m_results) {
+            if (result.status == "SUCCESS") {
+                successful++;
+                totalSolveTime += result.totalTime;
+            } else if (result.status == "SKIPPED_NO_COORDS") {
+                skipped++;
+            } else {
+                failed++;
+            }
+        }
+        
+        std::cout << "Summary:" << std::endl;
+        std::cout << "  Successful: " << successful << "/" << m_totalJobs << std::endl;
+        std::cout << "  Failed: " << failed << "/" << m_totalJobs << std::endl;
+        std::cout << "  Skipped (no coordinates): " << skipped << "/" << m_totalJobs << std::endl;
+        if (successful > 0) {
+            std::cout << "  Average solve time: " << std::fixed << std::setprecision(2) 
+                      << (totalSolveTime / successful) << "s" << std::endl;
+            std::cout << "  Throughput (successful): " << std::fixed << std::setprecision(2) 
+                      << (successful / (totalBatchTime / 1000.0)) << " solves/second" << std::endl;
+        }
+        
+        QCoreApplication::quit();
+    }
+
+    QStringList findIndexFiles() {
+        QStringList indexPaths;
+        QStringList searchPaths = {
+            "/usr/local/astrometry/data",
+            "/opt/homebrew/share/astrometry", 
+            "/usr/local/share/astrometry"
+        };
+        
+        for (const QString &path : searchPaths) {
+            QDir indexDir(path);
+            if (indexDir.exists()) {
+                QStringList filters;
+                filters << "index-*.fits";
+                QFileInfoList indexFiles = indexDir.entryInfoList(filters, QDir::Files);
+                
+                if (!indexFiles.isEmpty()) {
+                    indexPaths.append(path);
+                    break;
+                }
+            }
+        }
+        
+        return indexPaths;
+    }
+
+private:
+    int m_maxConcurrent;
+    int m_totalJobs = 0;
+    std::atomic<int> m_completedJobs;
+    
+    Parameters m_commonParams;
+    QStringList m_indexPaths;
+    
+    QQueue<SolveJob> m_jobQueue;
+    QHash<StellarSolver*, SolveJob> m_activeSolvers;
+    QHash<StellarSolver*, std::vector<uint8_t>> m_imageBuffers; // Keep buffers alive per solver
+    QList<SolveJob> m_results;
+    
+    QDateTime m_batchStartTime;
 };
-
-/*
-// ===============================================================================
-// ALTERNATIVE: If you can't modify the header, create a new constructor
-// ===============================================================================
-
-// If the header file is auto-generated or you can't modify it,
-// add this initialization in the .cpp file:
-
-void StellarSolverManager::initializeMembers() {
-    // Call this immediately after construction
-    m_imageFiles = QStringList();
-    m_indexPaths = QStringList(); 
-    m_results = QList<QPair<QString, bool>>();
-    m_imageBuffer = std::vector<float>();
-    m_imageBuffer8 = std::vector<uint8_t>();
-    
-    qDebug() << "Manually initialized member variables";
-}
-
-// Then call it like this:
-// StellarSolverManager* manager = new StellarSolverManager(this);
-// manager->initializeMembers();  // Add this line
-
-// ===============================================================================
-// IMMEDIATE WORKAROUND - Add this to your StellinaProcessor where you create the manager
-// ===============================================================================
-
-void StellinaProcessor::initializeStellarSolver() {
-    if (m_stellarSolverManager) {
-        delete m_stellarSolverManager;
-    }
-    
-    m_stellarSolverManager = new StellarSolverManager(this);
-    
-    // WORKAROUND: Force proper initialization by calling a dummy operation
-    QStringList emptyList;
-    try {
-        // This will initialize the internal QStringList properly
-        bool result = m_stellarSolverManager->initializeBatch(emptyList);
-        // We expect this to fail due to empty list, but it initializes the member
-    } catch (...) {
-        qDebug() << "Expected failure during dummy initialization";
-    }
-    
-    qDebug() << "StellarSolver initialized and member variables reset";
-}
-
-// ===============================================================================
-// ROOT CAUSE SUMMARY
-// ===============================================================================
-*/
-
-/*
- * THE PROBLEM:
- * In StellarSolverManager.h, the constructor was:
- * 
- * StellarSolverManager(QObject* parent = nullptr) 
- *     : QObject(parent), m_solver(nullptr), m_currentImageIndex(0), m_totalImages(0) {
- * 
- * Notice: m_imageFiles, m_indexPaths, m_results are NOT in the initializer list!
- * This means they are default-constructed but may be in an undefined state.
- * 
- * THE FIX:
- * Add all member variables to the constructor initializer list:
- * 
- * StellarSolverManager(QObject* parent = nullptr) 
- *     : QObject(parent)
- *     , m_solver(nullptr)
- *     , m_currentImageIndex(0)
- *     , m_totalImages(0)
- *     , m_imageFiles()        // FIX: Add this
- *     , m_indexPaths()        // FIX: Add this
- *     , m_results()           // FIX: Add this
- *     , m_imageBuffer()       // FIX: Add this
- *     , m_imageBuffer8()      // FIX: Add this
- * 
- * This ensures all member variables are properly initialized before use.
- */
-
-

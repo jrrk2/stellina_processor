@@ -271,12 +271,12 @@ private slots:
     void onSaveWCSResult();
     void onLoadSpecificImageInViewer(const QString &imagePath);
     void onStellarSolverProgress(int current, int total, const QString& status);
-    void onStellarSolverError(const QString& error);
-    void onStellarSolverBatchComplete();
-    void onStellarSolverImageSkipped(const QString& filename, const QString& reason);
+//    void onStellarSolverError(const QString& error);
+//    void onStellarSolverBatchComplete();
+//    void onStellarSolverImageSkipped(const QString& filename, const QString& reason);
     void onStellarSolverImageProcessed(const QString& filename, bool success, double ra, double dec, double pixelScale);
-    void onStellarSolverProgressUpdated(int current, int total, const QString& status);
-    void onStellarSolverImageSolved(const QString& filename, bool success, double ra, double dec, double pixelScale);
+//    void onStellarSolverProgressUpdated(int current, int total, const QString& status);
+//    void onStellarSolverImageSolved(const QString& filename, bool success, double ra, double dec, double pixelScale);
 
 private:
     // Session timing state
@@ -435,16 +435,11 @@ private:
                              double expectedRA = 0.0, double expectedDec = 0.0,
                              double currentRA = 0.0, double currentDec = 0.0,
                              double testLat = 0.0, double testLon = 0.0);
-    bool runSolveField(const QString &fitsPath, const QString &outputPath, double ra, double dec);
-    bool checkSolveFieldInstalled();
     bool createBinnedImageForPlatesolving(const QString &inputPath, const QString &binnedPath);
     bool performCFABinning(const std::vector<float> &inputPixels, std::vector<float> &binnedPixels, 
                           long width, long height, long &binnedWidth, long &binnedHeight);
-    QProcessEnvironment createSolveFieldEnvironment();
-    QStringList getAstrometryPaths();
     void initializeWCSStacker();
     void setupWCSStackingUI();
-//    void addWCSMenuItems();
     void updateWCSUI();
     void loadWCSSettings();
     void saveWCSSettings();
@@ -693,9 +688,8 @@ private:
     QString generatePlateSolvedPath(const QString &inputPath);
     bool estimateFieldOfView(const QString &fitsPath, double &fovWidth, double &fovHeight);
     QStringList getSupportedSolveFieldOptions();
-    void initializeStellarSolver();
     
-    StellarSolverManager* m_stellarSolverManager;
+    ParallelStellarSolver* m_stellarSolverManager;
     bool m_useStellarSolver; // Flag to choose between solve-field and StellarSolver
   };
 
