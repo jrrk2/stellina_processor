@@ -472,141 +472,335 @@ bool StellinaProcessor::createBinnedImageForPlatesolving(const QString &inputPat
                   .arg(QFileInfo(binnedPath).fileName()).arg(binnedWidth).arg(binnedHeight), "green");
     return true;
 }
-// Modified findStellinaImages function to support reversed images
-bool StellinaProcessor::findStellinaImages() {
-    m_imagesToProcess.clear();
-    m_stellinaImageData.clear();
+
+
+// Enhanced coordinate extraction that can handle both JSON and FITS sources
+bool StellinaProcessor::extractCoordinatesFromAnySource(const QString &fitsPath, 
+                                                       const QString &jsonPath, 
+                                                       CoordinateSource &coords) {
+    // First priority: Try to extract from JSON if it exists (original method)
+    if (!jsonPath.isEmpty() && QFile::exists(jsonPath)) {
+        QJsonObject metadata = loadStellinaJson(jsonPath);
+        if (!metadata.isEmpty()) {
+            double alt, az;
+            if (extractCoordinates(metadata, alt, az)) {
+                // Convert Alt/Az to RA/Dec using existing method
+                QString dateObs = extractDateObs(fitsPath);
+                if (!dateObs.isEmpty()) {
+                    double ra, dec;
+                    if (convertAltAzToRaDec(alt, az, dateObs, ra, dec)) {
+                        coords.type = CoordinateSource::FROM_JSON_ALTAZ;
+                        coords.ra = ra;
+                        coords.dec = dec;
+                        coords.alt = alt;
+                        coords.az = az;
+                        coords.source_info = QString("JSON Alt/Az: %1°,%2° -> RA/Dec: %3°,%4°")
+                                           .arg(alt, 0, 'f', 4).arg(az, 0, 'f', 4)
+                                           .arg(ra, 0, 'f', 6).arg(dec, 0, 'f', 6);
+                        
+                        if (m_debugMode) {
+                            logMessage(QString("Using JSON coordinates: %1").arg(coords.source_info), "green");
+                        }
+                        return true;
+                    }
+                }
+            }
+        }
+    }
     
-    QDir sourceDir(m_sourceDirectory);
-    if (!sourceDir.exists()) {
-        logMessage(QString("Source directory does not exist: '%1'").arg(m_sourceDirectory), "red");
+    // Second priority: Try to extract WCS coordinates directly from FITS
+    if (extractWCSCoordinatesFromFITS(fitsPath, coords)) {
+        if (m_debugMode) {
+            logMessage(QString("Using FITS WCS coordinates: %1").arg(coords.source_info), "green");
+        }
+        return true;
+    }
+    
+    // No valid coordinates found from either source
+    coords.type = CoordinateSource::INVALID;
+    return false;
+}
+
+// New function to extract WCS coordinates directly from FITS headers
+bool StellinaProcessor::extractWCSCoordinatesFromFITS(const QString &fitsPath, CoordinateSource &coords) {
+    fitsfile *fptr = nullptr;
+    int status = 0;
+    
+    QByteArray pathBytes = fitsPath.toLocal8Bit();
+    if (fits_open_file(&fptr, pathBytes.data(), READONLY, &status)) {
         return false;
     }
     
-    logMessage(QString("Scanning directory: %1").arg(sourceDir.absolutePath()), "blue");
+    // Try to read CRVAL1 and CRVAL2 (RA/Dec reference point)
+    double crval1, crval2;
+    bool hasWCS = true;
     
+    if (fits_read_key(fptr, TDOUBLE, "CRVAL1", &crval1, nullptr, &status) != 0) {
+        hasWCS = false;
+    }
+    
+    status = 0; // Reset status for next read
+    if (fits_read_key(fptr, TDOUBLE, "CRVAL2", &crval2, nullptr, &status) != 0) {
+        hasWCS = false;
+    }
+    
+    if (hasWCS) {
+        // Successfully read WCS coordinates
+        coords.type = CoordinateSource::FROM_FITS_WCS;
+        coords.ra = crval1;
+        coords.dec = crval2;
+        coords.alt = 0;  // Not available from WCS
+        coords.az = 0;   // Not available from WCS
+        coords.source_info = QString("FITS WCS: CRVAL1=%1°, CRVAL2=%2°")
+                           .arg(crval1, 0, 'f', 6).arg(crval2, 0, 'f', 6);
+        
+        fits_close_file(fptr, &status);
+        return true;
+    }
+    
+    fits_close_file(fptr, &status);
+    return false;
+}
+
+// Modified findStellinaImages function to handle both coordinate sources
+bool StellinaProcessor::findStellinaImages() {
+    if (m_sourceDirectory.isEmpty()) {
+        logMessage("No source directory selected", "red");
+        return false;
+    }
+    
+    QDir sourceDir(m_sourceDirectory);
+    if (!sourceDir.exists()) {
+        logMessage("Source directory does not exist", "red");
+        return false;
+    }
+    
+    m_stellinaImageData.clear();
+    m_imagesToProcess.clear();
+    
+    // Find all FITS files
     QStringList fitsFiles = sourceDir.entryList(QStringList() << "*.fits" << "*.fit" << "*.FITS" << "*.FIT", QDir::Files);
-    logMessage(QString("Found %1 FITS files").arg(fitsFiles.count()), "blue");
+    fitsFiles.sort();
+    
+    logMessage(QString("Found %1 FITS files").arg(fitsFiles.size()), "blue");
     
     int validPairs = 0;
     int jsonMissing = 0;
-    int qualityRejected = 0;
-    int reversedImages = 0;
+    int wcsAvailable = 0;
+    int totalInvalid = 0;
     
     for (const QString &fitsFile : fitsFiles) {
-        StellinaImageData imageData;
-        imageData.originalFitsPath = sourceDir.absoluteFilePath(fitsFile);
-        imageData.currentFitsPath = imageData.originalFitsPath;
-        
-        // Check if this is a reversed stellina image
-        imageData.isReversedImage = isReversedStellinaImage(fitsFile);
-        if (imageData.isReversedImage) {
-            reversedImages++;
-            logMessage(QString("Found reversed Stellina image: %1").arg(fitsFile), "blue");
-        }
-        
-        // Get base name (without 'r' suffix for reversed images)
-        imageData.baseName = getBaseName(fitsFile);
-        
-        // Detect bayer pattern
-        imageData.bayerPattern = detectBayerPattern(imageData.originalFitsPath);
-        
+        QString fitsPath = sourceDir.absoluteFilePath(fitsFile);
         QString baseName = QFileInfo(fitsFile).baseName();
         
-        // Try to find corresponding JSON file
-        // For reversed images, look for JSON files both with and without 'r' suffix
-        QStringList jsonCandidates;
+        StellinaImageData imageData;
+        imageData.originalFitsPath = fitsPath;
+        imageData.currentFitsPath = fitsPath;
         
-        if (imageData.isReversedImage) {
-            // For img-0001r.fits, try both img-0001r.json and img-0001.json
-            jsonCandidates << baseName + ".json"
-                          << baseName + ".JSON"
-                          << imageData.baseName + ".json"
-                          << imageData.baseName + ".JSON"
-                          << baseName + "-stacking.json"
-                          << baseName + "-stacking.JSON"
-                          << imageData.baseName + "-stacking.json"
-                          << imageData.baseName + "-stacking.JSON";
-        } else {
-            // Regular candidates for normal images
-            jsonCandidates << baseName + ".json"
-                          << baseName + ".JSON"
-                          << baseName + "-stacking.json"
-                          << baseName + "-stacking.JSON";
-        }
+        // Try to find corresponding JSON file (original behavior)
+        QStringList jsonCandidates = {
+            baseName + ".json",
+            baseName + ".JSON",
+            baseName + "-stacking.json",
+            baseName + "-stacking.JSON"
+        };
         
-        // Add complete base name candidates
-        jsonCandidates << QFileInfo(fitsFile).completeBaseName() + ".json"
-                      << QFileInfo(fitsFile).completeBaseName() + ".JSON"
-                      << QFileInfo(fitsFile).completeBaseName() + "-stacking.json"
-                      << QFileInfo(fitsFile).completeBaseName() + "-stacking.JSON";
-        
-        bool jsonFound = false;
+        QString jsonPath;
         for (const QString &candidate : jsonCandidates) {
             QString candidatePath = sourceDir.absoluteFilePath(candidate);
-            qDebug() << candidatePath;
             if (QFile::exists(candidatePath)) {
+                jsonPath = candidatePath;
                 imageData.originalJsonPath = candidatePath;
-                jsonFound = true;
                 break;
             }
         }
         
-        if (!jsonFound) {
-            if (m_debugMode) {
-                logMessage(QString("No JSON metadata found for: %1").arg(fitsFile), "orange");
+        // Extract coordinates from any available source
+        CoordinateSource coords;
+        if (extractCoordinatesFromAnySource(fitsPath, jsonPath, coords)) {
+            // Populate imageData based on coordinate source
+            if (coords.type == CoordinateSource::FROM_JSON_ALTAZ) {
+                // Original JSON-based workflow
+                imageData.metadata = loadStellinaJson(jsonPath);
+                imageData.altitude = coords.alt;
+                imageData.azimuth = coords.az;
+                imageData.hasValidCoordinates = true;
+                
+                // Quality filtering for JSON-based coordinates
+                if (m_qualityFilter && !checkStellinaQuality(imageData.metadata)) {
+                    if (m_debugMode) {
+                        logMessage(QString("Rejected due to quality filter: %1").arg(fitsFile), "orange");
+                    }
+                    continue;
+                }
+                
+                if (jsonPath.isEmpty()) jsonMissing++; // This shouldn't happen in this branch
+                
+            } else if (coords.type == CoordinateSource::FROM_FITS_WCS) {
+                // New WCS-based workflow
+                imageData.altitude = coords.alt;   // Will be 0
+                imageData.azimuth = coords.az;     // Will be 0
+                imageData.hasValidCoordinates = true;
+                
+                // Create minimal metadata object for compatibility
+                QJsonObject minimalMetadata;
+                minimalMetadata["coordinate_source"] = "fits_wcs";
+                minimalMetadata["crval1"] = coords.ra;
+                minimalMetadata["crval2"] = coords.dec;
+                imageData.metadata = minimalMetadata;
+                
+                wcsAvailable++;
             }
-            jsonMissing++;
-            continue;
-        }
-        
-        // Load and parse JSON metadata
-        imageData.metadata = loadStellinaJson(imageData.originalJsonPath);
-        if (imageData.metadata.isEmpty()) {
-            logMessage(QString("Failed to parse JSON for %1").arg(fitsFile), "red");
-            continue;
-        }
-
-        // Extract coordinates from JSON
-        if (!extractCoordinates(imageData.metadata, imageData.altitude, imageData.azimuth)) {
-            logMessage(QString("Failed to extract metadata from: %1").arg(imageData.originalJsonPath), "red");
-            continue;
-        }
-
-        imageData.hasValidCoordinates = true;
-        
-        // Extract FITS metadata
-        imageData.exposureSeconds = extractExposureTime(imageData.originalFitsPath);
-        imageData.temperatureKelvin = extractTemperature(imageData.originalFitsPath);
-        imageData.binning = extractBinning(imageData.originalFitsPath);
-        imageData.dateObs = extractDateObs(imageData.originalFitsPath);
-        
-        // Quality filtering
-        if (m_qualityFilter && !checkStellinaQuality(imageData.metadata)) {
-            qualityRejected++;
+            
+            // Extract additional FITS metadata (common to both workflows)
+            imageData.exposureSeconds = extractExposureTime(fitsPath);
+            imageData.temperatureKelvin = extractTemperature(fitsPath);
+            imageData.binning = extractBinning(fitsPath);
+            imageData.dateObs = extractDateObs(fitsPath);
+            imageData.bayerPattern = detectBayerPattern(fitsPath);
+            
+            // Store calculated coordinates for both sources
+            imageData.calculatedRA = coords.ra;
+            imageData.calculatedDec = coords.dec;
+            imageData.hasCalculatedCoords = true;
+            
+            m_stellinaImageData.append(imageData);
+            m_imagesToProcess.append(fitsPath);
+            validPairs++;
+            
             if (m_debugMode) {
-                logMessage(QString("Rejected due to invalid coordinates: %1").arg(fitsFile), "orange");
+                logMessage(QString("Valid image: %1 - %2").arg(fitsFile).arg(coords.source_info), "gray");
             }
-            qualityRejected++;
-            continue;
-        }
-        
-        m_stellinaImageData.append(imageData);
-        m_imagesToProcess.append(imageData.originalFitsPath);
-        validPairs++;
-        
-        if (m_debugMode) {
-            QString typeInfo = imageData.isReversedImage ? " (REVERSED)" : "";
-            logMessage(QString("Added: %1 -> %2%3 (Bayer: %4)")
-                          .arg(QFileInfo(fitsFile).fileName())
-                          .arg(QFileInfo(imageData.originalJsonPath).fileName())
-                          .arg(typeInfo)
-                          .arg(imageData.bayerPattern), "gray");
+        } else {
+            totalInvalid++;
+            if (m_debugMode) {
+                logMessage(QString("No valid coordinates found for: %1").arg(fitsFile), "orange");
+            }
         }
     }
     
-    logMessage(QString("Results: %1 valid pairs, %2 missing JSON, %3 quality rejected, %4 reversed images")
-                  .arg(validPairs).arg(jsonMissing).arg(qualityRejected).arg(reversedImages), "blue");
+    // Summary report
+    logMessage("", "gray");
+    logMessage("=== COORDINATE SOURCE SUMMARY ===", "blue");
+    logMessage(QString("Total FITS files: %1").arg(fitsFiles.size()), "gray");
+    logMessage(QString("Valid images found: %1").arg(validPairs), "green");
+    if (validPairs - wcsAvailable > 0) {
+        logMessage(QString("  - From JSON Alt/Az: %1").arg(validPairs - wcsAvailable), "gray");
+    }
+    if (wcsAvailable > 0) {
+        logMessage(QString("  - From FITS WCS: %1").arg(wcsAvailable), "gray");
+    }
+    if (totalInvalid > 0) {
+        logMessage(QString("Invalid/skipped: %1").arg(totalInvalid), "orange");
+    }
+    logMessage("", "gray");
     
-    return !m_stellinaImageData.isEmpty();
+    if (validPairs == 0) {
+        logMessage("No valid image pairs found. Check that files have either:", "red");
+        logMessage("  1. Corresponding JSON files with Alt/Az coordinates, OR", "red");
+        logMessage("  2. FITS headers with CRVAL1/CRVAL2 WCS coordinates", "red");
+        return false;
+    }
+    
+    return true;
+}
+
+// Modified writeStellinaMetadataWithCoordinates to handle WCS sources
+bool StellinaProcessor::writeStellinaMetadataWithCoordinates(const QString &fitsPath, const StellinaImageData &imageData) {
+    fitsfile *fptr = nullptr;
+    int status = 0;
+    
+    QByteArray pathBytes = fitsPath.toLocal8Bit();
+    if (fits_open_file(&fptr, pathBytes.data(), READWRITE, &status)) {
+        logMessage(QString("Failed to open FITS file for metadata writing: %1 (status: %2)").arg(fitsPath).arg(status), "red");
+        return false;
+    }
+    
+    // Check if coordinates came from WCS (in which case they're already in the file)
+    bool coordsFromWCS = imageData.metadata.contains("coordinate_source") && 
+                        imageData.metadata["coordinate_source"].toString() == "fits_wcs";
+    
+    if (!coordsFromWCS) {
+        // Original workflow: write Alt/Az and calculated RA/Dec
+        if (imageData.hasValidCoordinates && imageData.hasCalculatedCoords) {
+            // Write Stellina Alt/Az coordinates
+            double alt = imageData.altitude;
+            double az = imageData.azimuth;
+            
+            if (fits_write_key(fptr, TDOUBLE, "STELLALT", &alt, "Stellina mount altitude (degrees)", &status) ||
+                fits_write_key(fptr, TDOUBLE, "STELLAZ", &az, "Stellina mount azimuth (degrees)", &status)) {
+                logMessage("Warning: Could not write Stellina Alt/Az coordinates", "orange");
+                status = 0;
+            }
+            
+            // Write calculated RA/Dec coordinates
+            double ra = imageData.calculatedRA;
+            double dec = imageData.calculatedDec;
+            
+            if (fits_write_key(fptr, TDOUBLE, "STELLRA", &ra, "Calculated RA from mount position (degrees)", &status) ||
+                fits_write_key(fptr, TDOUBLE, "STELLDEC", &dec, "Calculated Dec from mount position (degrees)", &status)) {
+                logMessage("Warning: Could not write calculated RA/Dec coordinates", "orange");
+                status = 0;
+            }
+            
+            // Write coordinate conversion metadata
+            QString conversion_method = "Alt/Az to RA/Dec from Stellina mount position";
+            QByteArray methodBytes = conversion_method.toLocal8Bit();
+            char* methodPtr = methodBytes.data();
+            if (fits_write_key(fptr, TSTRING, "COORDMET", &methodPtr, "Mount coordinate conversion method", &status)) {
+                logMessage("Warning: Could not write conversion method", "orange");
+                status = 0;
+            }
+        }
+        
+        // Write original file paths if they exist
+        if (!imageData.originalJsonPath.isEmpty()) {
+            QString origJsonRelative = QFileInfo(imageData.originalJsonPath).fileName();
+            QByteArray origJsonBytes = origJsonRelative.toLocal8Bit();
+            char* origJsonPtr = origJsonBytes.data();
+            
+            if (fits_write_key(fptr, TSTRING, "STELLJSON", &origJsonPtr, "Original Stellina JSON file", &status)) {
+                logMessage("Warning: Could not write original JSON file reference", "orange");
+                status = 0;
+            }
+        }
+    } else {
+        // WCS workflow: coordinates are already in CRVAL1/CRVAL2, just mark the source
+        QString wcs_source = "WCS coordinates from FITS headers (CRVAL1/CRVAL2)";
+        QByteArray sourceBytes = wcs_source.toLocal8Bit();
+        char* sourcePtr = sourceBytes.data();
+        if (fits_write_key(fptr, TSTRING, "COORDMET", &sourcePtr, "Coordinate source method", &status)) {
+            logMessage("Warning: Could not write coordinate source method", "orange");
+            status = 0;
+        }
+    }
+    
+    // Write common metadata (exposure, temperature, etc.) regardless of coordinate source
+    if (imageData.exposureSeconds > 0) {
+        int exposure = imageData.exposureSeconds;
+        if (fits_write_key(fptr, TINT, "STELLEXP", &exposure, "Exposure time (seconds)", &status)) {
+            logMessage("Warning: Could not write exposure time", "orange");
+            status = 0;
+        }
+    }
+    
+    if (imageData.temperatureKelvin > 0) {
+        int temperature = imageData.temperatureKelvin;
+        if (fits_write_key(fptr, TINT, "STELLTMP", &temperature, "Sensor temperature (Kelvin)", &status)) {
+            logMessage("Warning: Could not write temperature", "orange");
+            status = 0;
+        }
+    }
+    
+    if (!imageData.binning.isEmpty()) {
+        QByteArray binningBytes = imageData.binning.toLocal8Bit();
+        char* binningPtr = binningBytes.data();
+        if (fits_write_key(fptr, TSTRING, "STELLBIN", &binningPtr, "Binning mode", &status)) {
+            logMessage("Warning: Could not write binning mode", "orange");
+            status = 0;
+        }
+    }
+    
+    fits_close_file(fptr, &status);
+    return true;
 }

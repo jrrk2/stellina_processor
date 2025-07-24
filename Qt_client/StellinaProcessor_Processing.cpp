@@ -151,6 +151,7 @@ bool StellinaProcessor::setupPlatesolvingStage() {
         }
     }
     // Start batch processing
+    m_stellarSolverManager->setOutputDirectory(m_plateSolvedDirectory);
     m_stellarSolverManager->startBatchSolving();
     return true;
 }

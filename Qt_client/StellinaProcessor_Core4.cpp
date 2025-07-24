@@ -66,6 +66,7 @@ bool StellinaProcessor::cleanExistingStellinaKeywords(const QString &fitsPath) {
     return (status == 0);
 }
 
+// Enhanced readStellinaMetadataFromFits to handle WCS coordinates
 bool StellinaProcessor::readStellinaMetadataFromFits(const QString &fitsPath, StellinaImageData &imageData) {
     fitsfile *fptr = nullptr;
     int status = 0;
@@ -76,91 +77,159 @@ bool StellinaProcessor::readStellinaMetadataFromFits(const QString &fitsPath, St
         return false;
     }
     
-    // Read Stellina Alt/Az coordinates
+    // First, check if we have WCS coordinates (CRVAL1/CRVAL2)
+    double crval1, crval2;
+    bool hasWCSCoords = true;
+    
+    if (fits_read_key(fptr, TDOUBLE, "CRVAL1", &crval1, nullptr, &status) != 0) {
+        hasWCSCoords = false;
+    }
+    
+    status = 0; // Reset status for next read
+    if (fits_read_key(fptr, TDOUBLE, "CRVAL2", &crval2, nullptr, &status) != 0) {
+        hasWCSCoords = false;
+    }
+    
+    // Try to read Stellina Alt/Az coordinates
     double alt, az;
-    if (fits_read_key(fptr, TDOUBLE, "STELLALT", &alt, nullptr, &status) == 0 &&
-        fits_read_key(fptr, TDOUBLE, "STELLAZ", &az, nullptr, &status) == 0) {
+    bool hasStellinaCoords = true;
+    status = 0; // Reset status
+    
+    if (fits_read_key(fptr, TDOUBLE, "STELLALT", &alt, nullptr, &status) != 0) {
+        hasStellinaCoords = false;
+    }
+    
+    status = 0; // Reset for next read
+    if (fits_read_key(fptr, TDOUBLE, "STELLAZ", &az, nullptr, &status) != 0) {
+        hasStellinaCoords = false;
+    }
+    
+    // Set coordinate data based on what's available
+    if (hasStellinaCoords) {
+        // Preferred: Use Stellina Alt/Az coordinates
         imageData.altitude = alt;
         imageData.azimuth = az;
         imageData.hasValidCoordinates = true;
+        
+        if (m_debugMode) {
+            logMessage(QString("Read Stellina Alt/Az coordinates: Alt=%1°, Az=%2°")
+                      .arg(alt, 0, 'f', 4).arg(az, 0, 'f', 4), "gray");
+        }
+        
+        // Try to read pre-calculated RA/Dec coordinates if they exist
+        double stellra, stelldec;
+        status = 0;
+        if (fits_read_key(fptr, TDOUBLE, "STELLRA", &stellra, nullptr, &status) == 0) {
+            status = 0;
+            if (fits_read_key(fptr, TDOUBLE, "STELLDEC", &stelldec, nullptr, &status) == 0) {
+                imageData.calculatedRA = stellra;
+                imageData.calculatedDec = stelldec;
+                imageData.hasCalculatedCoords = true;
+                
+                if (m_debugMode) {
+                    logMessage(QString("Read pre-calculated coordinates: RA=%1°, Dec=%2°")
+                              .arg(stellra, 0, 'f', 6).arg(stelldec, 0, 'f', 6), "gray");
+                }
+            }
+        }
+        
+    } else if (hasWCSCoords) {
+        // Fallback: Use WCS coordinates directly
+        imageData.altitude = 0;  // Not available from WCS
+        imageData.azimuth = 0;   // Not available from WCS
+        imageData.hasValidCoordinates = true;
+        imageData.calculatedRA = crval1;
+        imageData.calculatedDec = crval2;
+        imageData.hasCalculatedCoords = true;
+        
+        // Create minimal metadata to indicate WCS source
+        QJsonObject wcsMetadata;
+        wcsMetadata["coordinate_source"] = "fits_wcs";
+        wcsMetadata["crval1"] = crval1;
+        wcsMetadata["crval2"] = crval2;
+        imageData.metadata = wcsMetadata;
+        
+        if (m_debugMode) {
+            logMessage(QString("Using WCS coordinates from FITS: CRVAL1=%1°, CRVAL2=%2°")
+                      .arg(crval1, 0, 'f', 6).arg(crval2, 0, 'f', 6), "green");
+        }
+        
     } else {
-        logMessage(QString("No Stellina Alt/Az coordinates found in FITS header: %1").arg(QFileInfo(fitsPath).fileName()), "orange");
+        // Neither coordinate system available
+        if (m_debugMode) {
+            logMessage(QString("No coordinate data found in FITS header: %1").arg(QFileInfo(fitsPath).fileName()), "orange");
+        }
+        imageData.hasValidCoordinates = false;
+        imageData.hasCalculatedCoords = false;
     }
     
-    // NEW: Try to read pre-calculated RA/DEC coordinates
-    double stellra, stelldec;
-    status = 0; // Reset status
-    bool hasPreCalculatedCoords = false;
-    
-    if (fits_read_key(fptr, TDOUBLE, "STELLRA", &stellra, nullptr, &status) == 0) {
-        status = 0; // Reset for next read
-        if (fits_read_key(fptr, TDOUBLE, "STELLDEC", &stelldec, nullptr, &status) == 0) {
-            // Store the pre-calculated coordinates in the imageData structure
-            imageData.calculatedRA = stellra;
-            imageData.calculatedDec = stelldec;
-            imageData.hasCalculatedCoords = true;
-            hasPreCalculatedCoords = true;
-            
-            if (m_debugMode) {
-                logMessage(QString("Read pre-calculated coordinates from FITS: RA=%1°, Dec=%2°")
-                              .arg(stellra, 0, 'f', 6).arg(stelldec, 0, 'f', 6), "gray");
-            }
+    // Read other metadata (exposure, temperature, binning, etc.)
+    status = 0;
+    int exposure;
+    if (fits_read_key(fptr, TINT, "STELLEXP", &exposure, nullptr, &status) == 0) {
+        imageData.exposureSeconds = exposure;
+    } else {
+        // Fallback to standard FITS exposure keyword
+        status = 0;
+        double exptime;
+        if (fits_read_key(fptr, TDOUBLE, "EXPTIME", &exptime, nullptr, &status) == 0) {
+            imageData.exposureSeconds = static_cast<int>(exptime);
         }
     }
     
-    if (!hasPreCalculatedCoords && m_debugMode) {
-        logMessage(QString("No pre-calculated RA/DEC found in FITS header: %1").arg(fitsPath), "gray");
-    }
-    
-    // Read exposure and temperature
-    int exposure, temperature;
     status = 0;
-    if (fits_read_key(fptr, TINT, "STELLEXP", &exposure, nullptr, &status) == 0) {
-        imageData.exposureSeconds = exposure;
-    }
-    status = 0; // Reset for next read
-    
-    if (fits_read_key(fptr, TINT, "STELLTEMP", &temperature, nullptr, &status) == 0) {
+    int temperature;
+    if (fits_read_key(fptr, TINT, "STELLTMP", &temperature, nullptr, &status) == 0) {
         imageData.temperatureKelvin = temperature;
+    } else {
+        // Try standard temperature keywords
+        status = 0;
+        double ccd_temp;
+        if (fits_read_key(fptr, TDOUBLE, "CCD-TEMP", &ccd_temp, nullptr, &status) == 0) {
+            imageData.temperatureKelvin = static_cast<int>(ccd_temp + 273.15); // Convert C to K
+        }
     }
+    
     status = 0;
-    
-    // Read original file paths
-    char origFits[FLEN_VALUE], origJson[FLEN_VALUE];
-    if (fits_read_key(fptr, TSTRING, "STELLORIG", origFits, nullptr, &status) == 0) {
-        // Convert back to full path (assuming same directory)
-        QDir sourceDir(QFileInfo(fitsPath).dir());
-        imageData.originalFitsPath = sourceDir.absoluteFilePath(QString::fromLatin1(origFits).trimmed().remove('\'')); 
+    char binning[FLEN_VALUE];
+    if (fits_read_key(fptr, TSTRING, "STELLBIN", binning, nullptr, &status) == 0) {
+        imageData.binning = QString::fromLatin1(binning).trimmed().remove('\'').remove('"');
+    } else {
+        // Try standard binning keywords
+        status = 0;
+        int xbinning = 1, ybinning = 1;
+        fits_read_key(fptr, TINT, "XBINNING", &xbinning, nullptr, &status);
+        status = 0;
+        fits_read_key(fptr, TINT, "YBINNING", &ybinning, nullptr, &status);
+        if (xbinning > 0 && ybinning > 0) {
+            imageData.binning = QString("%1x%2").arg(xbinning).arg(ybinning);
+        }
     }
+    
+    // Read observation date
     status = 0;
-    
-    if (fits_read_key(fptr, TSTRING, "STELLJSON", origJson, nullptr, &status) == 0) {
-        QDir sourceDir(QFileInfo(imageData.originalFitsPath).dir());
-        imageData.originalJsonPath = sourceDir.absoluteFilePath(QString::fromLatin1(origJson).trimmed().remove('\''));
+    char dateobs[FLEN_VALUE];
+    if (fits_read_key(fptr, TSTRING, "DATE-OBS", dateobs, nullptr, &status) == 0) {
+        imageData.dateObs = QString::fromLatin1(dateobs).trimmed().remove('\'').remove('"');
     }
     
-    // Update current path
-    imageData.currentFitsPath = fitsPath;
-    
-    // Read DATE-OBS if not already set
-    if (imageData.dateObs.isEmpty()) {
-        imageData.dateObs = extractDateObs(fitsPath);
-    }
+    // Read bayer pattern
+    imageData.bayerPattern = detectBayerPattern(fitsPath);
     
     fits_close_file(fptr, &status);
     
-    if (m_debugMode) {
-        QString coordInfo = hasPreCalculatedCoords ? 
-            QString("with pre-calculated RA/Dec") : 
-            QString("Alt/Az only");
-        logMessage(QString("Read Stellina metadata from: %1 (Alt=%.2f°, Az=%.2f°) %2")
-                      .arg(QFileInfo(fitsPath).fileName())
-                      .arg(imageData.altitude)
-                      .arg(imageData.azimuth)
-                      .arg(coordInfo), "gray");
+    // Summary message
+    if (imageData.hasValidCoordinates) {
+        QString coordSource = hasStellinaCoords ? "Stellina Alt/Az" : "WCS (CRVAL1/CRVAL2)";
+        if (m_debugMode) {
+            logMessage(QString("Successfully read metadata from %1 using %2 coordinates")
+                      .arg(QFileInfo(fitsPath).fileName()).arg(coordSource), "green");
+        }
+        return true;
+    } else {
+        logMessage(QString("No valid coordinate data found in: %1").arg(QFileInfo(fitsPath).fileName()), "orange");
+        return false;
     }
-    
-    return true;
 }
 
 // Helper function to find image data by file path

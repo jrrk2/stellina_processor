@@ -70,74 +70,93 @@ public:
         startNextJobs();
     }
 
+    // Add this method to set the output directory (call from StellinaProcessor):
+    void setOutputDirectory(const QString& outputDir) {
+    m_outputDirectory = outputDir;
+    }
+
 signals:
     void progressChanged(int completed, int total);  // Main progress signal
     void statusChanged(const QString& message);      // Status updates
     void batchFinished(int successful, int failed);  // Completion signal
 
 private slots:
-    void onSolverFinished() {
-        StellarSolver* solver = qobject_cast<StellarSolver*>(sender());
-        if (!solver || !m_activeSolvers.contains(solver)) {
-            return;
-        }
 
-        SolveJob& job = m_activeSolvers[solver];
-        
-        // Calculate times
-        qint64 totalMs = job.startTime.msecsTo(QDateTime::currentDateTime());
-        job.totalTime = totalMs / 1000.0;
-
-        // Process results
-        if (solver->solvingDone() && solver->hasWCSData()) {
-            FITSImage::Solution solution = solver->getSolution();
-            job.status = "SUCCESS";
-            job.ra = solution.ra;
-            job.dec = solution.dec;
-            job.pixelScale = solution.pixscale / 2.0; // Correct for 2x downsampling
-            job.solveTime = job.totalTime; // Approximate since we don't have internal timing
-            
-            std::cout << "[Job " << job.jobId << "] ✓ SUCCESS: " << QFileInfo(job.filename).baseName().toStdString() << std::endl;
-            std::cout << "    RA: " << job.ra << "°, Dec: " << job.dec << "°" << std::endl;
-            std::cout << "    Pixel scale: " << job.pixelScale << " arcsec/pix" << std::endl;
-            std::cout << "    Total time: " << std::fixed << std::setprecision(2) << job.totalTime << "s" << std::endl;
-        } else {
-            job.status = "FAILED";
-            std::cout << "[Job " << job.jobId << "] ✗ FAILED: " << QFileInfo(job.filename).baseName().toStdString();
-            if (solver->failed()) {
-                std::cout << " (solver failed)";
-            } else if (!solver->solvingDone()) {
-                std::cout << " (incomplete)";
-            } else {
-                std::cout << " (no WCS data)";
-            }
-            std::cout << std::endl;
-            std::cout << "    Total time: " << std::fixed << std::setprecision(2) << job.totalTime << "s" << std::endl;
-        }
-
-        // Store completed job
-        m_completedJobs = m_totalJobs - m_jobQueue.size();
-	    emit progressChanged(m_completedJobs, m_totalJobs);
-        m_results.append(job);
-        
-        // Clean up solver
-        m_activeSolvers.remove(solver);
-        solver->deleteLater();
-
-        // Progress update
-	    // progressUpdated(m_completedJobs);
-        std::cout << "Progress: " << m_completedJobs << "/" << m_totalJobs << " completed" << std::endl;
-        std::cout << std::endl;
-
-        // Start next job if available
-        startNextJobs();
-
-        // Check if all jobs complete
-        if (m_completedJobs >= m_totalJobs) {
-            finishBatch();
-        }
+// Replace your existing onSolverFinished() slot with this:
+void onSolverFinished() {
+    StellarSolver* solver = qobject_cast<StellarSolver*>(sender());
+    if (!solver || !m_activeSolvers.contains(solver)) {
+        return;
     }
 
+    SolveJob& job = m_activeSolvers[solver];
+    
+    // Calculate times
+    qint64 totalMs = job.startTime.msecsTo(QDateTime::currentDateTime());
+    job.totalTime = totalMs / 1000.0;
+
+    // Process results
+    if (solver->solvingDone() && solver->hasWCSData()) {
+        FITSImage::Solution solution = solver->getSolution();
+        job.status = "SUCCESS";
+        job.ra = solution.ra;
+        job.dec = solution.dec;
+        job.pixelScale = solution.pixscale / 2.0; // Correct for 2x downsampling
+        job.solveTime = job.totalTime;
+        
+        // Write WCS results to output FITS file
+        QString inputFile = job.filename;
+        QString baseName = QFileInfo(inputFile).baseName();
+        QString outputFile = QString("%1/plate_solved_%2.fits")
+                            .arg(m_outputDirectory)
+                            .arg(baseName);
+        
+        if (writeWCSToFITS(inputFile, outputFile, solution)) {
+            std::cout << "[Job " << job.jobId << "] ✓ SUCCESS: " << baseName.toStdString() << std::endl;
+            std::cout << "    RA: " << job.ra << "°, Dec: " << job.dec << "°" << std::endl;
+            std::cout << "    Pixel scale: " << job.pixelScale << " arcsec/pix" << std::endl;
+            std::cout << "    WCS written to: " << QFileInfo(outputFile).fileName().toStdString() << std::endl;
+            std::cout << "    Total time: " << std::fixed << std::setprecision(2) << job.totalTime << "s" << std::endl;
+        } else {
+            std::cout << "[Job " << job.jobId << "] ⚠ SOLVED but failed to write WCS: " << baseName.toStdString() << std::endl;
+            job.status = "SOLVED_NO_WRITE";
+        }
+        
+    } else {
+        job.status = "FAILED";
+        std::cout << "[Job " << job.jobId << "] ✗ FAILED: " << QFileInfo(job.filename).baseName().toStdString();
+        if (solver->failed()) {
+            std::cout << " (solver failed)";
+        } else if (!solver->solvingDone()) {
+            std::cout << " (incomplete)";
+        } else {
+            std::cout << " (no WCS data)";
+        }
+        std::cout << std::endl;
+        std::cout << "    Total time: " << std::fixed << std::setprecision(2) << job.totalTime << "s" << std::endl;
+    }
+
+    // Store completed job
+    m_completedJobs = m_totalJobs - m_jobQueue.size();
+    emit progressChanged(m_completedJobs, m_totalJobs);
+    m_results.append(job);
+    
+    // Clean up solver
+    m_activeSolvers.remove(solver);
+    solver->deleteLater();
+
+    // Progress update
+    std::cout << "Progress: " << m_completedJobs << "/" << m_totalJobs << " completed" << std::endl;
+    std::cout << std::endl;
+
+    // Check if all jobs are complete or start next job
+    if (m_completedJobs >= m_totalJobs) {
+        finishBatch();
+    } else {
+        startNextJobs();
+    }
+}
+    
 private:
     void setupCommonParameters() {
         // Get built-in profiles
@@ -237,25 +256,46 @@ private:
         if (fits_open_file(&fptr, fitsFile.toLocal8Bit().data(), READONLY, &status)) {
             return false;
         }
-        
-        // Check for required STELLRA and STELLDEC keywords - skip if missing
-        double fitsRA = -1, fitsDec = -91;
-        char comment[FLEN_COMMENT];
-        
-        status = 0;
-        bool hasSTELLRA = (fits_read_key(fptr, TDOUBLE, "STELLRA", &fitsRA, comment, &status) == 0);
-        status = 0;
-        bool hasSTELLDEC = (fits_read_key(fptr, TDOUBLE, "STELLDEC", &fitsDec, comment, &status) == 0);
-        
-        // Skip files without both STELLRA and STELLDEC
-        if (!hasSTELLRA || !hasSTELLDEC || fitsRA < 0 || fitsRA > 360 || fitsDec < -90 || fitsDec > 90) {
-            fits_close_file(fptr, &status);
-            return false;  // This will trigger LOAD_FAILED handling
-        }
-        
-        // Set coordinate hints
-        solver->setSearchPositionInDegrees(fitsRA, fitsDec);
-        
+
+	// Try to find coordinate information in priority order:
+	// 1. STELLRA/STELLDEC (preferred - from Stellina processing)
+	// 2. CRVAL1/CRVAL2 (fallback - from existing WCS)
+
+	double coordinateRA = -1, coordinateDec = -91;
+	QString coordinateSource = "unknown";
+
+	// First, try STELLRA/STELLDEC
+	char comment[FLEN_COMMENT];
+	status = 0;
+	bool hasSTELLRA = (fits_read_key(fptr, TDOUBLE, "STELLRA", &coordinateRA, comment, &status) == 0);
+	status = 0;
+	bool hasSTELLDEC = (fits_read_key(fptr, TDOUBLE, "STELLDEC", &coordinateDec, comment, &status) == 0);
+
+	if (hasSTELLRA && hasSTELLDEC && coordinateRA >= 0 && coordinateRA <= 360 && 
+        coordinateDec >= -90 && coordinateDec <= 90) {
+	    coordinateSource = "STELLRA/STELLDEC";
+	} else {
+	    // Fallback to WCS coordinates (CRVAL1/CRVAL2)
+	    status = 0;
+	    bool hasCRVAL1 = (fits_read_key(fptr, TDOUBLE, "CRVAL1", &coordinateRA, comment, &status) == 0);
+	    status = 0;
+	    bool hasCRVAL2 = (fits_read_key(fptr, TDOUBLE, "CRVAL2", &coordinateDec, comment, &status) == 0);
+
+	    if (hasCRVAL1 && hasCRVAL2 && coordinateRA >= 0 && coordinateRA <= 360 && 
+		coordinateDec >= -90 && coordinateDec <= 90 && (coordinateRA != 0 && coordinateDec != 0)) {
+		coordinateSource = "CRVAL1/CRVAL2 (WCS)";
+	    } else {
+		// No valid coordinates found
+		fits_close_file(fptr, &status);
+		std::cout << "[SKIP] No valid coordinates in " << QFileInfo(fitsFile).baseName().toStdString() 
+			  << " (checked STELLRA/STELLDEC and CRVAL1/CRVAL2)" << std::endl;
+		return false;
+	    }
+	}
+
+	// Set coordinate hints for the solver
+	solver->setSearchPositionInDegrees(coordinateRA, coordinateDec);
+	
         // Get image dimensions
         status = 0;
         if (fits_get_img_param(fptr, 2, &bitpix, &naxis, naxes, &status) || naxis != 2) {
@@ -400,6 +440,163 @@ private:
         return indexPaths;
     }
 
+    // Optional: Handle fileio log messages
+    void handleFileIOLog(const QString& message) {
+	// You can process fileio log messages here if needed
+	// std::cout << "FileIO: " << message.toStdString() << std::endl;
+    }
+
+    bool writeWCSToFITS(const QString& inputPath,
+					      const QString& outputPath, 
+					      const FITSImage::Solution& solution) {
+	fitsfile *inputFits = nullptr, *outputFits = nullptr;
+	int status = 0;
+
+	// Open input FITS file
+	QByteArray inputPathBytes = inputPath.toLocal8Bit();
+	if (fits_open_file(&inputFits, inputPathBytes.data(), READONLY, &status)) {
+	    std::cout << "Failed to open input FITS: " << inputPath.toStdString() 
+		      << " (status: " << status << ")" << std::endl;
+	    return false;
+	}
+
+	// Create output FITS file (force overwrite with !)
+	QByteArray outputPathBytes = QString("!%1").arg(outputPath).toLocal8Bit();
+	if (fits_create_file(&outputFits, outputPathBytes.data(), &status)) {
+	    std::cout << "Failed to create output FITS: " << outputPath.toStdString() 
+		      << " (status: " << status << ")" << std::endl;
+	    fits_close_file(inputFits, &status);
+	    return false;
+	}
+
+	// Copy entire input file to output (header + data)
+	if (fits_copy_file(inputFits, outputFits, 1, 1, 1, &status)) {
+	    std::cout << "Failed to copy FITS file (status: " << status << ")" << std::endl;
+	    fits_close_file(inputFits, &status);
+	    fits_close_file(outputFits, &status);
+	    return false;
+	}
+
+	// Close input file (no longer needed)
+	fits_close_file(inputFits, &status);
+
+	// Get image dimensions for reference pixel calculation
+	long naxes[2];
+	if (fits_get_img_size(outputFits, 2, naxes, &status)) {
+	    std::cout << "Warning: Could not get image dimensions for WCS reference pixel" << std::endl;
+	    naxes[0] = 1920; // Default fallback
+	    naxes[1] = 1080;
+	    status = 0; // Continue anyway
+	}
+
+	// Write WCS keywords to the output file
+	// Reference point (RA/Dec of reference pixel in degrees)
+	double crval1 = solution.ra;
+	double crval2 = solution.dec;
+	fits_write_key(outputFits, TDOUBLE, "CRVAL1", &crval1, "Reference RA (degrees)", &status);
+	fits_write_key(outputFits, TDOUBLE, "CRVAL2", &crval2, "Reference Dec (degrees)", &status);
+
+	// Reference pixel (center of image, 1-indexed)
+	double crpix1 = naxes[0] / 2.0 + 0.5;
+	double crpix2 = naxes[1] / 2.0 + 0.5;
+	fits_write_key(outputFits, TDOUBLE, "CRPIX1", &crpix1, "Reference pixel X", &status);
+	fits_write_key(outputFits, TDOUBLE, "CRPIX2", &crpix2, "Reference pixel Y", &status);
+
+	// Pixel scale converted to degrees/pixel (solution.pixscale is in arcsec/pixel)
+	double pixscale_deg = solution.pixscale / 3600.0;
+
+	// CD matrix (assuming square pixels, no rotation initially)
+	double cd11 = -pixscale_deg;  // Negative for standard orientation
+	double cd12 = 0.0;
+	double cd21 = 0.0;
+	double cd22 = pixscale_deg;
+
+	// Apply orientation if available
+	if (solution.orientation != 0.0) {
+	    double orient_rad = solution.orientation * M_PI / 180.0;
+	    double cos_orient = cos(orient_rad);
+	    double sin_orient = sin(orient_rad);
+
+	    cd11 = -pixscale_deg * cos_orient;
+	    cd12 = pixscale_deg * sin_orient;
+	    cd21 = pixscale_deg * sin_orient;
+	    cd22 = pixscale_deg * cos_orient;
+	}
+
+	fits_write_key(outputFits, TDOUBLE, "CD1_1", &cd11, "Coordinate matrix element", &status);
+	fits_write_key(outputFits, TDOUBLE, "CD1_2", &cd12, "Coordinate matrix element", &status);
+	fits_write_key(outputFits, TDOUBLE, "CD2_1", &cd21, "Coordinate matrix element", &status);
+	fits_write_key(outputFits, TDOUBLE, "CD2_2", &cd22, "Coordinate matrix element", &status);
+
+	// Coordinate types (TAN projection)
+	char ctype1[] = "RA---TAN";
+	char ctype2[] = "DEC--TAN";
+	char* ctype1_ptr = ctype1;
+	char* ctype2_ptr = ctype2;
+	fits_write_key(outputFits, TSTRING, "CTYPE1", &ctype1_ptr, "Coordinate type", &status);
+	fits_write_key(outputFits, TSTRING, "CTYPE2", &ctype2_ptr, "Coordinate type", &status);
+
+	// Coordinate units
+	char cunit1[] = "deg";
+	char cunit2[] = "deg";
+	char* cunit1_ptr = cunit1;
+	char* cunit2_ptr = cunit2;
+	fits_write_key(outputFits, TSTRING, "CUNIT1", &cunit1_ptr, "Coordinate unit", &status);
+	fits_write_key(outputFits, TSTRING, "CUNIT2", &cunit2_ptr, "Coordinate unit", &status);
+
+	// Additional WCS information
+	double pixscale_arcsec = solution.pixscale;
+	fits_write_key(outputFits, TDOUBLE, "PIXSCALE", &pixscale_arcsec, "Pixel scale (arcsec/pixel)", &status);
+
+	double orientation = solution.orientation;
+	fits_write_key(outputFits, TDOUBLE, "ORIENTAT", &orientation, "Position angle (degrees)", &status);
+
+	// Field dimensions (using correct field names from structure)
+	double fieldw = solution.fieldWidth;   // Field width in arcminutes
+	double fieldh = solution.fieldHeight;  // Field height in arcminutes
+	fits_write_key(outputFits, TDOUBLE, "FIELDW", &fieldw, "Field width (arcmin)", &status);
+	fits_write_key(outputFits, TDOUBLE, "FIELDH", &fieldh, "Field height (arcmin)", &status);
+
+	// Processing information
+	char solver[] = "StellarSolver";
+	char* solver_ptr = solver;
+	fits_write_key(outputFits, TSTRING, "SOLVER", &solver_ptr, "Plate solving software", &status);
+
+	// Parity information
+	QString parityText = (solution.parity == FITSImage::NEGATIVE) ? "negative" : "positive";
+	QByteArray parityBytes = parityText.toLocal8Bit();
+	char* parityPtr = parityBytes.data();
+	fits_write_key(outputFits, TSTRING, "PARITY", &parityPtr, "Image parity", &status);
+
+	// Solution errors if available
+	if (solution.raError > 0 && solution.decError > 0) {
+	    double raError = solution.raError;
+	    double decError = solution.decError;
+	    fits_write_key(outputFits, TDOUBLE, "RAERR", &raError, "RA error (arcsec)", &status);
+	    fits_write_key(outputFits, TDOUBLE, "DECERR", &decError, "Dec error (arcsec)", &status);
+	}
+
+	// Add processing history
+	QString history = QString("Plate solved: RA=%1°, Dec=%2°, Scale=%3\"/pix, Orient=%4°, Parity=%5")
+			    .arg(solution.ra, 0, 'f', 6)
+			    .arg(solution.dec, 0, 'f', 6)
+			    .arg(solution.pixscale, 0, 'f', 3)
+			    .arg(solution.orientation, 0, 'f', 2)
+			    .arg(parityText);
+	QByteArray historyBytes = history.toLocal8Bit();
+	fits_write_history(outputFits, historyBytes.data(), &status);
+
+	// Close output file
+	fits_close_file(outputFits, &status);
+
+	if (status != 0) {
+	    std::cout << "FITS error while writing WCS data (status: " << status << ")" << std::endl;
+	    return false;
+	}
+
+	return true;
+    }
+
 private:
     int m_maxConcurrent;
     int m_totalJobs = 0;
@@ -414,4 +611,5 @@ private:
     QList<SolveJob> m_results;
     
     QDateTime m_batchStartTime;
+    QString m_outputDirectory;  // Directory where solved FITS files will be written
 };

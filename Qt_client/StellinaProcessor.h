@@ -176,7 +176,6 @@ struct ProcessedImageData {
                           isValid(false), pixelScale(0), hasValidWCS(false) {}
 };
 
-
 struct CoordinateTestCase {
     QString name;
     double lat;           // Observer latitude (degrees)
@@ -190,6 +189,22 @@ struct CoordinateTestCase {
     double siderealTime;  // Local sidereal time (hours)
     double hourAngle;     // Hour angle (hours)
     QString description;  // Test description
+};
+
+// New structure to hold either JSON-derived or FITS-derived coordinate data
+struct CoordinateSource {
+    enum Type {
+        FROM_JSON_ALTAZ,    // Original: Alt/Az from JSON, converted to RA/Dec
+        FROM_FITS_WCS,      // New: Direct RA/Dec from FITS WCS headers
+        INVALID
+    };
+    
+    Type type;
+    double ra, dec;         // Final RA/Dec coordinates (degrees)
+    double alt, az;         // Alt/Az if available (degrees)
+    QString source_info;    // Description of coordinate source
+    
+    CoordinateSource() : type(INVALID), ra(0), dec(0), alt(0), az(0) {}
 };
 
 class StellinaProcessor : public QMainWindow {
@@ -232,6 +247,8 @@ public:
 				double &jd, double &lst, double &ha);
     void compareTimingAccuracy() ;
     void validateAcqTimePreservation() ;
+    bool extractCoordinatesFromAnySource(const QString &fitsPath, const QString &jsonPath, CoordinateSource &coords);
+    bool extractWCSCoordinatesFromFITS(const QString &fitsPath, CoordinateSource &coords);
 				       
 private slots:
     void onShowStretchedViewer();

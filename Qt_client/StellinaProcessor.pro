@@ -103,6 +103,7 @@ macx {
     INCLUDEPATH += /opt/homebrew/include/wcslib
     INCLUDEPATH += /opt/homebrew/Cellar/opencv/4.11.0_1/include/opencv4
     INCLUDEPATH += /usr/local/include/libstellarsolver
+    INCLUDEPATH += ../stellarsolver/tester ../stellarsolver
     LIBS += -L/opt/homebrew/lib -L/usr/local/lib 
     }
 
