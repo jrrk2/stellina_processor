@@ -1,6 +1,7 @@
 #include <QCoreApplication>
 #include <QObject>
 #include <QQueue>
+#include <QJsonObject>
 #include <iostream>
 #include <fitsio.h>
 
@@ -8,6 +9,7 @@
 #include <stellarsolver.h>
 #include <parameters.h>
 #include <structuredefinitions.h>
+#include "SimplifiedXISFWriter.h"
 
 struct SolveJob {
     QString filename;
@@ -107,19 +109,26 @@ void onSolverFinished() {
         // Write WCS results to output FITS file
         QString inputFile = job.filename;
         QString baseName = QFileInfo(inputFile).baseName();
-        QString outputFile = QString("%1/plate_solved_%2.fits")
-                            .arg(m_outputDirectory)
-                            .arg(baseName);
         
-        if (writeWCSToFITS(inputFile, outputFile, solution)) {
-            std::cout << "[Job " << job.jobId << "] ✓ SUCCESS: " << baseName.toStdString() << std::endl;
-            std::cout << "    RA: " << job.ra << "°, Dec: " << job.dec << "°" << std::endl;
-            std::cout << "    Pixel scale: " << job.pixelScale << " arcsec/pix" << std::endl;
-            std::cout << "    WCS written to: " << QFileInfo(outputFile).fileName().toStdString() << std::endl;
-            std::cout << "    Total time: " << std::fixed << std::setprecision(2) << job.totalTime << "s" << std::endl;
+        if (m_useXISF) {
+            QString outputFile = QString("%1/plate_solved_%2.xisf").arg(m_outputDirectory).arg(baseName);
+            if (writeWCSToXISF(inputFile, outputFile, solution)) {
+                std::cout << "    XISF written to: " << QFileInfo(outputFile).fileName().toStdString() << std::endl;
+            } else {
+                std::cout << "    Failed to write XISF file" << std::endl;
+            }
         } else {
-            std::cout << "[Job " << job.jobId << "] ⚠ SOLVED but failed to write WCS: " << baseName.toStdString() << std::endl;
-            job.status = "SOLVED_NO_WRITE";
+            QString outputFile = QString("%1/plate_solved_%2.fits").arg(m_outputDirectory).arg(baseName);
+	    if (writeWCSToFITS(inputFile, outputFile, solution)) {
+		std::cout << "[Job " << job.jobId << "] ✓ SUCCESS: " << baseName.toStdString() << std::endl;
+		std::cout << "    RA: " << job.ra << "°, Dec: " << job.dec << "°" << std::endl;
+		std::cout << "    Pixel scale: " << job.pixelScale << " arcsec/pix" << std::endl;
+		std::cout << "    WCS written to: " << QFileInfo(outputFile).fileName().toStdString() << std::endl;
+		std::cout << "    Total time: " << std::fixed << std::setprecision(2) << job.totalTime << "s" << std::endl;
+	    } else {
+		std::cout << "[Job " << job.jobId << "] ⚠ SOLVED but failed to write WCS: " << baseName.toStdString() << std::endl;
+		job.status = "SOLVED_NO_WRITE";
+	    }
         }
         
     } else {
@@ -446,6 +455,70 @@ private:
 	// std::cout << "FileIO: " << message.toStdString() << std::endl;
     }
 
+// =============================================================================
+// INTEGRATION WITH YOUR PIPELINE
+// =============================================================================
+
+    // Enhanced plate solving with XISF output
+    bool writeWCSToXISF(const QString& inputPath, 
+					      const QString& outputPath, 
+					      const FITSImage::Solution& solution) {
+
+	// Read original FITS image data (you already have this code)
+	fitsfile *fptr = nullptr;
+	int status = 0;
+
+	QByteArray inputPathBytes = inputPath.toLocal8Bit();
+	if (fits_open_file(&fptr, inputPathBytes.data(), READONLY, &status)) {
+	    return false;
+	}
+
+	// Get image dimensions
+	long naxes[2];
+	if (fits_get_img_size(fptr, 2, naxes, &status)) {
+	    fits_close_file(fptr, &status);
+	    return false;
+	}
+
+	int width = naxes[0];
+	int height = naxes[1];
+	long totalPixels = width * height;
+
+	// Read pixel data
+	std::vector<float> pixels(totalPixels);
+	if (fits_read_img(fptr, TFLOAT, 1, totalPixels, nullptr, pixels.data(), nullptr, &status)) {
+	    fits_close_file(fptr, &status);
+	    return false;
+	}
+
+	fits_close_file(fptr, &status);
+
+	// Create XISF file
+	SimplifiedXISFWriter writer(outputPath);
+
+	// Add the image
+	if (!writer.addImage("main", pixels.data(), width, height, 1)) {
+	    return false;
+	}
+
+	// Add WCS data
+	writer.addWCSData(solution);
+
+	// Add processing history
+	QJsonObject solvingParams;
+	solvingParams["solver"] = "StellarSolver";
+	solvingParams["input_file"] = QFileInfo(inputPath).fileName();
+	solvingParams["solve_time"] = QString::number(m_results[0].totalTime, 'f', 2);
+	solvingParams["pixel_scale"] = solution.pixscale;
+	writer.addProcessingHistory("plate_solving", solvingParams);
+
+	// Add file information
+	writer.addProperty("File:OriginalPath", "String", inputPath, "Original FITS file path");
+	writer.addProperty("File:ProcessingDate", "String", QDateTime::currentDateTimeUtc().toString(Qt::ISODate), "Processing date");
+
+	return writer.write();
+    }
+
     bool writeWCSToFITS(const QString& inputPath,
 					      const QString& outputPath, 
 					      const FITSImage::Solution& solution) {
@@ -612,4 +685,5 @@ private:
     
     QDateTime m_batchStartTime;
     QString m_outputDirectory;  // Directory where solved FITS files will be written
+    bool m_useXISF = true;
 };
