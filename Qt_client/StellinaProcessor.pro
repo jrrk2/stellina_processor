@@ -59,13 +59,18 @@ SOURCES += \
     StretchedImageViewer.cpp \
     WcsAstrometricStacker.cpp \
     CoordinateUtils.cpp \
-    
+    SimplifiedXISFWriter.cpp \
+    /Users/jonathan/PCL/src/3rdparty/RFC6234/sha384-512.c \
+    /Users/jonathan/PCL/src/3rdparty/RFC6234/sha224-256.c \
+    /Users/jonathan/PCL/src/3rdparty/RFC6234/sha1.c \
+
 # Header files
 HEADERS += \
     StellinaProcessor.h \
     StretchedImageViewer.h \
     WcsAstrometricStacker.h \
     StellarSolverManager.h \
+    SimplifiedXISFWriter.h \
     
 # Resources (if you add icons, etc.)
 # RESOURCES += resources.qrc
@@ -86,10 +91,12 @@ CONFIG(debug, debug|release) {
 CONFIG += warn_on
 
 # Additional libraries (if needed)
-LIBS += -lm -lcfitsio -lwcs -lopencv_core -lopencv_imgproc -lopencv_imgcodecs -lopencv_features2d -lnova -lstellarsolver6
+LIBS += -lm -lcfitsio -lwcs -lopencv_core -lopencv_imgproc -lopencv_imgcodecs -lopencv_features2d -lnova -lstellarsolver6 -lz -lzstd -llz4 -llcms2
 
 # Deployment settings for macOS
 macx {
+    DEFINES += __PCL_MACOSX
+    DEFINES += __PCL_NO_PERFORMANCE_CRITICAL_MATH_ROUTINES
     # Create app bundle with frameworks
     CONFIG += app_bundle
 
@@ -104,7 +111,9 @@ macx {
     INCLUDEPATH += /opt/homebrew/Cellar/opencv/4.11.0_1/include/opencv4
     INCLUDEPATH += /usr/local/include/libstellarsolver
     INCLUDEPATH += ../stellarsolver/tester ../stellarsolver
-    LIBS += -L/opt/homebrew/lib -L/usr/local/lib 
+    INCLUDEPATH += /Users/jonathan/PCL/include /Users/jonathan/PCL/src/modules/file-formats
+    LIBS += -L/opt/homebrew/lib -L/usr/local/lib /Users/jonathan/PCL/lib/libPCL-pxi.a
+
     }
 
 # Build output directories

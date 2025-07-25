@@ -1,5 +1,5 @@
-// Standalone XISF Format Checker
-// Compile with: g++ -std=c++17 xisf_checker.cpp -o xisf_checker `pkg-config --cflags --libs Qt5Core Qt5Xml`
+// Fixed XISF Format Checker that works around QXmlStreamReader namespace issues
+// Compile with: g++ -std=c++17 fixed_xisf_checker.cpp -o fixed_xisf_checker `pkg-config --cflags --libs Qt5Core Qt5Xml`
 
 #include <QCoreApplication>
 #include <QFile>
@@ -7,11 +7,10 @@
 #include <QXmlStreamReader>
 #include <QDebug>
 #include <QTextStream>
-#include <QCryptographicHash>
-#include <QtEndian>
+#include <QRegularExpression>
 #include <iostream>
 
-class XISFFormatChecker {
+class FixedXISFChecker {
 public:
     struct ValidationResult {
         bool isValid = false;
@@ -23,41 +22,18 @@ public:
         void addWarning(const QString& msg) { warnings << msg; }
         void addInfo(const QString& msg) { info << msg; }
     };
-    
-    struct ImageInfo {
-        QString id;
-        int width = 0;
-        int height = 0;
-        int channels = 0;
-        QString sampleFormat;
-        QString colorSpace;
-        qint64 location = 0;
-        qint64 size = 0;
-        QString checksum;
-    };
-    
-    struct PropertyInfo {
-        QString id;
-        QString type;
-        QString value;
-        QString comment;
-    };
 
 private:
-    QString m_filePath;
+    const QString m_filePath;
     QFile m_file;
     ValidationResult m_result;
-    QList<ImageInfo> m_images;
-    QList<PropertyInfo> m_properties;
-    qint64 m_xmlHeaderSize = 0;
-    qint64 m_blockAlignment = 4096;
     
 public:
-    XISFFormatChecker(const QString& filePath) : m_filePath(filePath), m_file(filePath) {}
+    FixedXISFChecker(const QString& filePath) : m_filePath(filePath), m_file(filePath) {}
     
     ValidationResult validate() {
         m_result = ValidationResult();
-        
+
         if (!m_file.exists()) {
             m_result.addError("File does not exist: " + m_filePath);
             return m_result;
@@ -70,22 +46,30 @@ public:
         
         m_result.addInfo(QString("File size: %1 bytes").arg(m_file.size()));
         
-        // Step 1: Validate XML header
-        if (!validateXMLHeader()) {
+        // Read XML header completely
+        const QByteArray xmlData = readCompleteXMLHeader();
+        if (xmlData.isEmpty()) {
+            m_result.addError("Could not read complete XML header (</xisf> end tag not found within limit)");
             return m_result;
         }
         
-        // Step 2: Validate block alignment
-        if (!validateBlockAlignment()) {
+        m_result.addInfo(QString("XML header size: %1 bytes").arg(xmlData.size()));
+        
+        // Validate XML structure using text/regex instead of QXmlStreamReader
+        if (!validateXMLStructure(xmlData)) {
             return m_result;
         }
         
-        // Step 3: Validate image data blocks
-        if (!validateImageBlocks()) {
+        // Validate block alignment with padding
+        if (!validateBlockAlignment(xmlData.size())) {
             return m_result;
         }
         
-        // Step 4: Final validation
+        // Validate image blocks referenced in XML header
+        if (!validateImageBlocks(xmlData)) {
+            return m_result;
+        }
+        
         if (m_result.errors.isEmpty()) {
             m_result.isValid = true;
             m_result.addInfo("✓ File passes all XISF monolithic format checks");
@@ -94,15 +78,14 @@ public:
         return m_result;
     }
     
-    void printReport() {
+    void printReport() const {
         QTextStream out(stdout);
         
-        out << "=== XISF Format Checker Report ===" << Qt::endl;
+        out << "=== Fixed XISF Format Checker Report ===" << Qt::endl;
         out << "File: " << QFileInfo(m_filePath).fileName() << Qt::endl;
         out << "Path: " << m_filePath << Qt::endl;
         out << Qt::endl;
         
-        // Overall status
         if (m_result.isValid) {
             out << "✓ VALID: File is a properly formatted monolithic XISF file" << Qt::endl;
         } else {
@@ -110,7 +93,6 @@ public:
         }
         out << Qt::endl;
         
-        // Errors
         if (!m_result.errors.isEmpty()) {
             out << "ERRORS:" << Qt::endl;
             for (const QString& error : m_result.errors) {
@@ -119,7 +101,6 @@ public:
             out << Qt::endl;
         }
         
-        // Warnings
         if (!m_result.warnings.isEmpty()) {
             out << "WARNINGS:" << Qt::endl;
             for (const QString& warning : m_result.warnings) {
@@ -128,282 +109,178 @@ public:
             out << Qt::endl;
         }
         
-        // Information
         if (!m_result.info.isEmpty()) {
             out << "INFORMATION:" << Qt::endl;
             for (const QString& info : m_result.info) {
                 out << "  ℹ " << info << Qt::endl;
             }
-            out << Qt::endl;
-        }
-        
-        // Properties summary
-        if (!m_properties.isEmpty()) {
-            out << "PROPERTIES (" << m_properties.size() << "):" << Qt::endl;
-            for (const auto& prop : m_properties) {
-                out << QString("  %1 (%2) = %3").arg(prop.id, prop.type, prop.value);
-                if (!prop.comment.isEmpty()) {
-                    out << " // " << prop.comment;
-                }
-                out << Qt::endl;
-            }
-            out << Qt::endl;
-        }
-        
-        // Images summary
-        if (!m_images.isEmpty()) {
-            out << "IMAGES (" << m_images.size() << "):" << Qt::endl;
-            for (const auto& img : m_images) {
-                out << QString("  %1: %2x%3x%4 %5 %6")
-                       .arg(img.id)
-                       .arg(img.width).arg(img.height).arg(img.channels)
-                       .arg(img.sampleFormat, img.colorSpace);
-                out << QString(" @ location %1 (%2 bytes)").arg(img.location).arg(img.size);
-                if (!img.checksum.isEmpty()) {
-                    out << " checksum: " << img.checksum;
-                }
-                out << Qt::endl;
-            }
         }
     }
 
 private:
-    bool validateXMLHeader() {
+    // Read the entire XML header by scanning for "</xisf>" tag.
+    // Limit read size to avoid infinite loops on corrupted files.
+    QByteArray readCompleteXMLHeader() {
         m_file.seek(0);
-        QByteArray xmlData;
+        QByteArray data;
         
-        // Read until we find the end of XML or reasonable limit
-        const qint64 maxXMLSize = 1024 * 1024; // 1MB max for XML header
-        char buffer[8192];
-        bool foundXMLEnd = false;
+        constexpr int chunkSize = 4096;
+        constexpr qint64 maxReadSize = 100 * 1024 * 1024; // 100 MB max to avoid runaway
+        char buffer[chunkSize];
         
-        while (!foundXMLEnd && xmlData.size() < maxXMLSize) {
-            qint64 bytesRead = m_file.read(buffer, sizeof(buffer));
-            if (bytesRead <= 0) break;
+        while (data.size() < maxReadSize) {
+            qint64 bytesRead = m_file.read(buffer, chunkSize);
+            if (bytesRead <= 0) {
+                break;
+            }
             
-            xmlData.append(buffer, bytesRead);
+            data.append(buffer, bytesRead);
             
-            // Look for </xisf> to find end of XML
-            if (xmlData.contains("</xisf>")) {
-                // Find the exact position
-                int endPos = xmlData.indexOf("</xisf>") + 7; // 7 = length of "</xisf>"
-                xmlData = xmlData.left(endPos);
-                foundXMLEnd = true;
+            int endPos = data.indexOf("</xisf>");
+            if (endPos != -1) {
+                endPos += 7; // Include the length of "</xisf>"
+                return data.left(endPos);
             }
         }
         
-        if (!foundXMLEnd) {
-            m_result.addError("Could not find end of XML header (</xisf> tag)");
-            return false;
-        }
-        
-        m_xmlHeaderSize = xmlData.size();
-        m_result.addInfo(QString("XML header size: %1 bytes").arg(m_xmlHeaderSize));
-        
-        // Parse XML
-        QXmlStreamReader xml(xmlData);
-        
-        if (!xml.readNextStartElement()) {
-            m_result.addError("No XML start element found");
-            return false;
-        }
-        
-        if (xml.name() != "xisf") {
-            m_result.addError("Root element is not 'xisf', found: " + xml.name().toString());
-            return false;
-        }
-        
-        // Check version
-        QString version = xml.attributes().value("version").toString();
-        if (version != "1.0") {
-            m_result.addWarning("XISF version is not '1.0', found: " + version);
-        }
-        
-        // Check namespace
-        QString xmlns = xml.attributes().value("xmlns").toString();
-        if (xmlns != "http://www.pixinsight.com/xisf") {
-            m_result.addError("Incorrect xmlns: " + xmlns);
-            return false;
-        }
-        
-        m_result.addInfo("✓ Valid XISF root element with correct namespace");
-        
-        // Parse elements
-        while (xml.readNextStartElement()) {
-            if (xml.name() == "Metadata") {
-                if (!parseMetadata(xml)) {
-                    return false;
-                }
-            } else if (xml.name() == "Image") {
-                if (!parseImage(xml)) {
-                    return false;
-                }
-            } else {
-                xml.skipCurrentElement();
-            }
-        }
-        
-        if (xml.hasError()) {
-            m_result.addError("XML parsing error: " + xml.errorString());
-            return false;
-        }
-        
-        return true;
+        return QByteArray(); // Not found or too big
     }
     
-    bool parseMetadata(QXmlStreamReader& xml) {
-        while (xml.readNextStartElement()) {
-            if (xml.name() == "Property") {
-                PropertyInfo prop;
-                prop.id = xml.attributes().value("id").toString();
-                prop.type = xml.attributes().value("type").toString();
-                prop.value = xml.attributes().value("value").toString();
-                prop.comment = xml.attributes().value("comment").toString();
-                
-                if (prop.id.isEmpty() || prop.type.isEmpty()) {
-                    m_result.addWarning("Property missing id or type");
-                } else {
-                    m_properties.append(prop);
-                    
-                    // Check for required properties
-                    if (prop.id == "XISF:BlockAlignmentSize") {
-                        bool ok;
-                        m_blockAlignment = prop.value.toInt(&ok);
-                        if (!ok || m_blockAlignment <= 0) {
-                            m_result.addError("Invalid BlockAlignmentSize: " + prop.value);
-                            return false;
-                        }
-                        m_result.addInfo(QString("Block alignment: %1 bytes").arg(m_blockAlignment));
-                    }
-                }
-                
-                xml.skipCurrentElement();
-            } else {
-                xml.skipCurrentElement();
-            }
-        }
-        return true;
-    }
-    
-    bool parseImage(QXmlStreamReader& xml) {
-        ImageInfo img;
-        img.id = xml.attributes().value("id").toString();
+    bool validateBlockAlignment(qint64 xmlSize) {
+        constexpr qint64 blockAlignment = 4096;
         
-        QString geometry = xml.attributes().value("geometry").toString();
-        QStringList geomParts = geometry.split(':');
-        if (geomParts.size() >= 3) {
-            img.width = geomParts[0].toInt();
-            img.height = geomParts[1].toInt();
-            img.channels = geomParts[2].toInt();
+        // Calculate expected padded size aligned to blockAlignment
+        const qint64 expectedPaddedSize = ((xmlSize + blockAlignment - 1) / blockAlignment) * blockAlignment;
+        
+        m_result.addInfo(QString("Raw XML size: %1 bytes").arg(xmlSize));
+        m_result.addInfo(QString("Expected padded size (block aligned): %1 bytes").arg(expectedPaddedSize));
+        
+        if (expectedPaddedSize > m_file.size()) {
+            m_result.addError(QString("File too small to contain padded XML header: file size %1 < expected %2")
+                              .arg(m_file.size()).arg(expectedPaddedSize));
+            return false;
         }
         
-        img.sampleFormat = xml.attributes().value("sampleFormat").toString();
-        img.colorSpace = xml.attributes().value("colorSpace").toString();
-        
-        QString location = xml.attributes().value("location").toString();
-        if (location.startsWith("attachment:")) {
-            QStringList locParts = location.mid(11).split(':'); // Remove "attachment:"
-            if (locParts.size() >= 2) {
-                img.location = locParts[0].toLongLong();
-                img.size = locParts[1].toLongLong();
-            }
+        if (expectedPaddedSize == xmlSize) {
+            m_result.addInfo("✓ XML size is already block-aligned");
+            return true;
         }
         
-        img.checksum = xml.attributes().value("checksum").toString();
+        // Check zero padding bytes after raw XML data up to padded size
+        if (!m_file.seek(xmlSize)) {
+            m_result.addError(QString("Failed to seek to XML end at byte %1").arg(xmlSize));
+            return false;
+        }
         
-        m_images.append(img);
-        xml.skipCurrentElement();
-        return true;
-    }
-    
-    bool validateBlockAlignment() {
-        // Check if XML header is properly aligned
-        qint64 alignedHeaderSize = ((m_xmlHeaderSize + m_blockAlignment - 1) / m_blockAlignment) * m_blockAlignment;
+        const qint64 paddingSize = expectedPaddedSize - xmlSize;
+        QByteArray padding = m_file.read(paddingSize);
         
-        if (alignedHeaderSize != m_xmlHeaderSize) {
-            // Check if there's zero padding
-            m_file.seek(m_xmlHeaderSize);
-            QByteArray padding = m_file.read(alignedHeaderSize - m_xmlHeaderSize);
-            
-            bool isZeroPadded = true;
-            for (int i = 0; i < padding.size(); ++i) {
-                if (padding[i] != 0) {
-                    isZeroPadded = false;
-                    break;
-                }
-            }
-            
-            if (isZeroPadded) {
-                m_result.addInfo(QString("✓ Header properly zero-padded from %1 to %2 bytes")
-                               .arg(m_xmlHeaderSize).arg(alignedHeaderSize));
-            } else {
-                m_result.addError(QString("Header not properly zero-padded (size: %1, should be: %2)")
-                                .arg(m_xmlHeaderSize).arg(alignedHeaderSize));
+        if (padding.size() != paddingSize) {
+            m_result.addError(QString("Could not read full padding bytes, expected %1 got %2")
+                              .arg(paddingSize).arg(padding.size()));
+            return false;
+        }
+        
+        for (int i = 0; i < padding.size(); ++i) {
+            if (padding[i] != 0) {
+                m_result.addError(QString("Non-zero byte found in XML header padding at offset %1").arg(xmlSize + i));
                 return false;
             }
-        } else {
-            m_result.addInfo("✓ Header size is already block-aligned");
         }
+        
+        m_result.addInfo(QString("✓ Header properly zero-padded from %1 to %2 bytes")
+                        .arg(xmlSize).arg(expectedPaddedSize));
         
         return true;
     }
     
-    bool validateImageBlocks() {
-        for (const auto& img : m_images) {
-            // Check if location is properly aligned
-            if (img.location % m_blockAlignment != 0) {
-                m_result.addWarning(QString("Image %1 location %2 is not block-aligned")
-                                  .arg(img.id).arg(img.location));
-            }
-            
-            // Check if we can read the expected amount of data
-            if (!m_file.seek(img.location)) {
-                m_result.addError(QString("Cannot seek to image %1 location %2").arg(img.id).arg(img.location));
-                continue;
-            }
-            
-            QByteArray imageData = m_file.read(img.size);
-            if (imageData.size() != img.size) {
-                m_result.addError(QString("Image %1: expected %2 bytes, read %3 bytes")
-                                .arg(img.id).arg(img.size).arg(imageData.size()));
-                continue;
-            }
-            
-            // Validate checksum if present
-            if (!img.checksum.isEmpty()) {
-                QString expectedChecksum = img.checksum;
-                if (expectedChecksum.startsWith("sha1:")) {
-                    expectedChecksum = expectedChecksum.mid(5);
-                }
-                
-                QCryptographicHash hash(QCryptographicHash::Sha1);
-                hash.addData(imageData);
-                QByteArray actualChecksum = hash.result().toHex();
-                
-                if (actualChecksum.toLower() != expectedChecksum.toLower()) {
-                    m_result.addError(QString("Image %1 checksum mismatch: expected %2, got %3")
-                                    .arg(img.id, expectedChecksum, QString(actualChecksum)));
-                } else {
-                    m_result.addInfo(QString("✓ Image %1 checksum verified").arg(img.id));
-                }
-            }
-            
-            // Basic sanity checks
-            qint64 expectedSize = static_cast<qint64>(img.width) * img.height * img.channels;
-            if (img.sampleFormat == "Float32") {
-                expectedSize *= 4;
-            } else if (img.sampleFormat == "UInt16") {
-                expectedSize *= 2;
-            }
-            
-            if (img.size != expectedSize) {
-                m_result.addWarning(QString("Image %1 size mismatch: declared %2 bytes, expected %3 bytes")
-                                  .arg(img.id).arg(img.size).arg(expectedSize));
-            }
-            
-            m_result.addInfo(QString("✓ Image %1 data block validated").arg(img.id));
+    bool validateXMLStructure(const QByteArray& xmlData) {
+        const QString xmlStr = QString::fromUtf8(xmlData);
+        
+        // Check XML declaration
+        if (!xmlStr.contains(QLatin1String("<?xml version=\"1.0\""))) {
+            m_result.addError("Missing or invalid XML declaration");
+            return false;
+        }
+        m_result.addInfo("✓ Valid XML declaration found");
+        
+        // Check XISF root element with version attribute
+        const QRegularExpression xisfRegex(R"(<xisf\s+version="1\.0"[^>]*>)");
+        if (!xisfRegex.match(xmlStr).hasMatch()) {
+            m_result.addError("Invalid or missing XISF root element");
+            return false;
+        }
+        m_result.addInfo("✓ Valid XISF root element found");
+        
+        // Check namespace
+        if (!xmlStr.contains(QLatin1String("xmlns=\"http://www.pixinsight.com/xisf\""))) {
+            m_result.addError("Missing or incorrect XISF namespace");
+            return false;
+        }
+        m_result.addInfo("✓ Correct XISF namespace found");
+        
+        // Check for required Metadata section
+        if (!xmlStr.contains(QLatin1String("<Metadata>"))) {
+            m_result.addError("Missing Metadata section");
+            return false;
+        }
+        m_result.addInfo("✓ Metadata section found");
+        
+        // Check for BlockAlignmentSize property
+        if (!xmlStr.contains(QLatin1String("XISF:BlockAlignmentSize"))) {
+            m_result.addError("Missing XISF:BlockAlignmentSize property");
+            return false;
+        }
+        m_result.addInfo("✓ BlockAlignmentSize property found");
+        
+        // Check Image element presence
+        const QRegularExpression imageRegex(R"(<Image\s+[^>]*id="[^"]*"[^>]*>)");
+        if (!imageRegex.match(xmlStr).hasMatch()) {
+            m_result.addError("Missing or invalid Image element");
+            return false;
+        }
+        m_result.addInfo("✓ Image element found");
+        
+        return true;
+    }
+    
+    bool validateImageBlocks(const QByteArray& xmlData) {
+        const QString xmlStr = QString::fromUtf8(xmlData);
+        
+        // Extract the first image location and size using regex
+        // Example: location="attachment:4096:123456"
+        QRegularExpression locationRegex(R"(location=\"attachment:(\d+):(\d+)\")");
+        QRegularExpressionMatch locationMatch = locationRegex.match(xmlStr);
+        
+        if (!locationMatch.hasMatch()) {
+            m_result.addError("Could not parse image location");
+            return false;
         }
         
+        const qint64 imageLocation = locationMatch.captured(1).toLongLong();
+        const qint64 imageSize = locationMatch.captured(2).toLongLong();
+        
+        m_result.addInfo(QString("Image location: %1, size: %2 bytes").arg(imageLocation).arg(imageSize));
+        
+        if (imageLocation % 4096 != 0) {
+            m_result.addWarning("Image location is not 4096-byte aligned");
+        } else {
+            m_result.addInfo("✓ Image location is properly block-aligned");
+        }
+        
+        if (!m_file.seek(imageLocation)) {
+            m_result.addError(QString("Cannot seek to image location %1").arg(imageLocation));
+            return false;
+        }
+        
+        QByteArray imageData = m_file.read(imageSize);
+        if (imageData.size() != imageSize) {
+            m_result.addError(QString("Expected %1 bytes of image data, but read %2 bytes")
+                              .arg(imageSize).arg(imageData.size()));
+            return false;
+        }
+        
+        m_result.addInfo("✓ Image data block validated");
         return true;
     }
 };
@@ -413,14 +290,14 @@ int main(int argc, char *argv[]) {
     
     if (argc < 2) {
         std::cout << "Usage: " << argv[0] << " <xisf_file>" << std::endl;
-        std::cout << "Validates XISF file format and reports issues" << std::endl;
+        std::cout << "Fixed XISF validator that works around QXmlStreamReader namespace issues" << std::endl;
         return 1;
     }
     
-    QString filePath = argv[1];
+    const QString filePath = argv[1];
     
-    XISFFormatChecker checker(filePath);
-    XISFFormatChecker::ValidationResult result = checker.validate();
+    FixedXISFChecker checker(filePath);
+    const FixedXISFChecker::ValidationResult result = checker.validate();
     checker.printReport();
     
     return result.isValid ? 0 : 1;

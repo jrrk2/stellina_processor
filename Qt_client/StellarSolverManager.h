@@ -462,7 +462,8 @@ private:
     // Enhanced plate solving with XISF output
     bool writeWCSToXISF(const QString& inputPath, 
 					      const QString& outputPath, 
-					      const FITSImage::Solution& solution) {
+                        const FITSImage::Solution& solution)
+     {
 
 	// Read original FITS image data (you already have this code)
 	fitsfile *fptr = nullptr;
@@ -518,7 +519,7 @@ private:
 
 	return writer.write();
     }
-
+    
     bool writeWCSToFITS(const QString& inputPath,
 					      const QString& outputPath, 
 					      const FITSImage::Solution& solution) {
